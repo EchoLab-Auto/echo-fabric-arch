@@ -6,7 +6,7 @@
 框架部分，目标是「任何 Rust 应用都能拿它建一套插件系统」——框架不依赖任何应用
 领域词汇（没有 session / tool / llm 这类概念）。EchoAgent 只是它的第一个使用者。
 
-## 状态：六件套齐备（v0.2.0）
+## 状态：六件套齐备（v0.11.2）
 
 | crate | 作用 |
 |---|---|
@@ -29,7 +29,7 @@
 `text_block_content` + `collect_text_blocks`（有序文本拼接）。
 
 ```bash
-cargo test --workspace   # 202 项
+cargo test --workspace   # 221 项（含 doctest）
 ```
 
 **它能被别的应用用吗？** 这是唯一有意义的问题，所以有一个可执行的证伪测试：
@@ -68,7 +68,7 @@ check` 通过）——按「为什么 → 核心模型 → 六件套 → 插件�
 
 ```toml
 [dependencies]
-echo-plugin-sdk = { git = "https://github.com/EchoLab-Auto/plugin-framework", tag = "v0.1.0" }
+echo-plugin-sdk = { git = "https://github.com/EchoLab-Auto/plugin-framework", tag = "v0.11.2" }
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -123,7 +123,7 @@ SDK 承担的东西（自己写一遍大约 450 行，且每处都容易错）�
 ## 开发
 
 ```bash
-cargo test        # 24 项：api 10 + sdk 14（+ 1 doctest）
+cargo test        # 同上（本仓单一测试入口，数字只看上面那一处，别在两处各写一份）
 cargo clippy --all-targets -- -D warnings
 ```
 

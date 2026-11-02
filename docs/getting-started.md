@@ -21,7 +21,7 @@
 
 ```toml
 [dependencies]
-echo-plugin-sdk = { git = "https://github.com/EchoLab-Auto/plugin-framework", tag = "v0.4.0" }
+echo-plugin-sdk = { git = "https://github.com/EchoLab-Auto/plugin-framework", tag = "v0.11.2" }
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -69,8 +69,8 @@ async fn main() {
 
 ```toml
 [dependencies]
-echo-context = { git = "…", tag = "v0.4.0" }
-echo-plugin-host = { git = "…", tag = "v0.4.0" }
+echo-context = { git = "…", tag = "v0.11.2" }
+echo-plugin-host = { git = "…", tag = "v0.11.2" }
 ```
 
 ```rust
@@ -148,7 +148,7 @@ let transport = StdioTransport::new("./plugin")
 
 ## 版本与兼容
 
-- 本仓是**单一版本**（workspace 共享）。用 `tag = "v0.4.0"` 钉住，`Cargo.lock`
+- 本仓是**单一版本**（workspace 共享）。用 `tag = "v0.11.2"` 钉住，`Cargo.lock`
   会进一步钉死 rev。
 - `PROTOCOL_VERSION` 与 crate 版本**独立**：改线上帧格式才 bump 协议版本（握手会
   fail-closed 拒绝旧端）；只改 Rust API 表面只 bump crate 版本。
