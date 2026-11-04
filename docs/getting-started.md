@@ -4,16 +4,20 @@
 （零序列化），也可以是**独立子进程**（崩溃隔离、跨语言）。本页是从零到跑通的
 最短路径。
 
-> 只想看代码？[`examples/`](../examples) 里有一个 130 行的宿主 + 70 行的插件，
+> 只想看代码？[`examples/`](../examples) 里有一个 160 行的宿主 + 70 行的插件，
 > 跑 `cargo build -p minimal-plugin && cargo run -p minimal-host` 就能看到全流程。
 
-## 0. 概念只有三个
+## 0. 先记住三个概念
 
 | 概念 | 是什么 | crate |
 |---|---|---|
 | **Ctx** | 服务定位器。宿主往里注册「这个进程里有哪些能力」，插件按名字取用 | `echo-context` |
 | **Plugin** | 插件 = manifest + 一次挂载。挂载是**副作用**，返回值是撤销句柄 `Disposer` | `echo-plugin` |
 | **Transport** | 插件实例怎么跑：同进程（inproc）还是子进程（stdio 帧协议） | `echo-plugin-host` |
+
+另外两个是**可选**的：`EventBus`（事件通知）与 `PluginScope`（插件树，让子插件随
+父插件级联卸载）。用不到就不碰。五个概念的全景见
+[核心模型](../document/model.md)。
 
 没有「工具」「会话」「人格」这类概念——框架不认识它们。宿主自己定义词汇。
 
@@ -138,7 +142,7 @@ let transport = StdioTransport::new("./plugin")
 `PROTOCOL_VERSION` = 1）。
 
 这不是说法而是能跑的事实：[`examples/minimal-plugin-py/plugin.py`](../examples/minimal-plugin-py/plugin.py)
-是一个纯 Python 插件，约 150 行、零 Rust 依赖，文件头把线上协议完整写了一遍
+是一个纯 Python 插件，约 170 行、零 Rust 依赖，文件头把线上协议完整写了一遍
 （帧格式 / 握手顺序 / 消息形状 / 生命周期），可直接当别的语言的参考实现。
 `cargo test -p echo-plugin-host --test cross_language` 会真的 spawn 它并验证
 握手、贡献解析、调用往返、版本不兼容拒绝。
@@ -161,3 +165,9 @@ let transport = StdioTransport::new("./plugin")
   词汇——去业务化排在 M5，需要 2 个以上真实外部使用者才动手。
 - 进程级单例表**不在**框架里（那是宿主机制）。要「这个进程只有一份」，用 `Ctx`
   显式注入；它天然支持多份互不干扰，同一进程能起两套宿主。
+
+## 接着读
+
+- 代码怎么分层、什么该放哪 → [组织一个应用](../document/structure.md)
+- 五个概念与其组合 → [核心模型](../document/model.md)
+- 为什么这么设计、什么时候不该用 → [为什么需要它](../document/why.md)

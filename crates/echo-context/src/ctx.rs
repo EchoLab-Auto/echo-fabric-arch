@@ -142,6 +142,9 @@ impl Ctx {
     ///
     /// 可见 ≠ 可解析：`keys()` 会包含父链的键，但**没有值**——要值请用
     /// [`resolve`](Self::resolve) / [`service`](Self::service)。
+    ///
+    /// 返回顺序**按名字排序**：底层是 `HashMap`（迭代顺序随机），而这份清单会进
+    /// `MissingService.available` 与面板——随机顺序会让同一个错误每次长得不一样。
     pub fn keys(&self) -> Vec<String> {
         let mut out: Vec<String> = self
             .services
@@ -157,6 +160,9 @@ impl Ctx {
                 }
             }
         }
+        // 排序：底层是 HashMap，迭代顺序随机；而这份清单是要给人看的
+        // （`MissingService.available`、面板、文档示例）。
+        out.sort();
         out
     }
 
@@ -827,10 +833,23 @@ mod tests {
         // 子 → 父 不可见
         assert!(!root.contains("own"));
         assert_eq!(root.resolve::<u32>("own"), None);
-        // keys 是并集（父链含进来）
-        let mut keys = child.keys();
-        keys.sort();
-        assert_eq!(keys, vec!["own".to_string(), "port".to_string()]);
+        // keys 是并集（父链含进来），且已排序
+        assert_eq!(
+            child.keys(),
+            vec!["own".to_string(), "port".to_string()],
+            "keys() 按名字排序，父链的键也含在内"
+        );
+    }
+
+    #[test]
+    fn keys_are_sorted_regardless_of_registration_order() {
+        // HashMap 的迭代顺序随机；keys() 必须给出稳定顺序，否则
+        // `MissingService.available` 这类给人看的清单每次都不一样。
+        let ctx = Arc::new(Ctx::default());
+        let _c = ctx.register::<u32>("zeta", 1);
+        let _a = ctx.register::<u32>("alpha", 2);
+        let _b = ctx.register::<u32>("mu", 3);
+        assert_eq!(ctx.keys(), vec!["alpha", "mu", "zeta"]);
     }
 
     #[test]

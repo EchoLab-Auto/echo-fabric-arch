@@ -30,8 +30,8 @@ graph TB
   Sdk[echo-plugin-sdk] --> Api
   Loader[echo-plugin-loader] --> Nothing[无 echo-* 依赖]
   Plugin["你的插件二进制"] --> Sdk
-  Gates[framework-gates] -.门禁.-> Reg
-  Gates -.门禁.-> HostC
+  Gates[framework-gates] -->|门禁| Reg
+  Gates -->|门禁| HostC
 ```
 
 关键约束：**`echo-plugin` 不依赖 `echo-defs` / 任何业务 crate**，`echo-context`

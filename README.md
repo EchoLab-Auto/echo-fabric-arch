@@ -1,131 +1,155 @@
 # echo-fabric-arch
 
-业务无关的 Rust 插件化框架：**插件契约 + 插件侧运行时**。
+**业务无关的 Rust 插件框架。** 一个插件契约，两种载体——进程内或独立子进程。
 
-本仓是 [EchoAgentCore](https://github.com/EchoLab-Auto/EchoAgentCore) 插件机制的
-框架部分，目标是「任何 Rust 应用都能拿它建一套插件系统」——框架不依赖任何应用
-领域词汇（没有 session / tool / llm 这类概念）。EchoAgent 只是它的第一个使用者。
+> 宿主不需要认识插件背后的业务，插件不需要认识宿主是谁。
 
-## 状态：六件套齐备（v0.11.2）
+由 EchoAgentCore 的插件机制抽出，业务词汇已抽干净——任何 Rust 应用都能直接用。
 
-| crate | 作用 |
-|---|---|
-| [`echo-context`](./crates/echo-context) | **内核**：服务定位 `Ctx` + 强类型 `ServiceKey` + 四模式 `EventBus` + 可逆注册 `Disposer` + `ScopedRegistry` |
-| [`echo-plugin-api`](./crates/echo-plugin-api) | **冻结协议**：`Hello` / `Invoke` / `Register` / `Cancel` / `Drain` / `HostCall`；贡献类型；版本协商 |
-| [`echo-plugin-loader`](./crates/echo-plugin-loader) | 分层配置合成（profile → bundle → patch）+ provenance + 依赖排序 |
-| [`echo-plugin`](./crates/echo-plugin) | manifest + 生命周期 + registry（挂载/卸载/启停门控） |
-| [`echo-plugin-host`](./crates/echo-plugin-host) | **宿主角**：运输层（inproc / stdio）+ supervisor（握手/取消/排空/崩溃重启）+ conformance 套件 |
-| [`echo-plugin-sdk`](./crates/echo-plugin-sdk) | **插件侧运行时**：帧读写、握手、serve 循环、宿主回呼 |
-| [`framework-gates`](./crates/framework-gates) | 仓库自守门禁（不反向依赖宿主 / 零全局态 / 领域无关） |
+## 它解决什么
 
-**插件语义（v0.6.0）**：`Inject`（声明式依赖：硬依赖缺失即拒绝挂载、软依赖只作
-声明）+ `mount_when_ready`（先等后挂）+ `reconcile`（依赖变更 → 重挂/卸下）+
-`PluginScope` / `MountContext::nest`（插件树：父插件宿主化子插件，卸载级联、
-子作用域遮蔽父服务）。对应 dsh 的 `inject` / `ctx.plugin()` / `ctx.isolate()`。
-事件双向通道（v0.7.0）：插件侧 `MountContext::emit`、宿主侧
-`Plugin::subscribed_events` / `on_event` + `PluginRegistry::deliver_event`。
-命令与文本块（v0.8.0）：`Plugin::handled_commands` / `handle_command` +
-`PluginRegistry::dispatch_command`（命令域归插件），`Plugin::text_blocks` /
-`text_block_content` + `collect_text_blocks`（有序文本拼接）。
+插件化的第一步通常是 `trait Plugin` + `HashMap<String, Box<dyn Plugin>>`。
+半天能跑通，然后撞上五个问题：
+
+| 问题 | 这里的答案 | crate |
+|---|---|---|
+| 卸载不干净 | **注册即副作用**：每次注册返回 `Disposer`，卸载时逆序撤销 | `echo-context` |
+| 顺序靠猜 | **声明式依赖**：`Inject { required, optional }`，缺硬依赖即拒绝挂载 | `echo-plugin` |
+| 一个崩溃全盘崩 | **进程外轨**：子进程 + supervisor（退避重启、熔断、`rlimit`） | `echo-plugin-host` |
+| 测试只能真跑 | 装载/卸载是纯 API，可 `assert`；示例宿主本身就是证伪测试 | `examples/` |
+| 语言被锁死 | **协议即 ABI**：4 字节长度前缀 + JSON，纯 Python 插件可直接跑 | `echo-plugin-api` |
+
+## 五个概念
+
+整个框架只有五个概念，其余都是它们的组合：
+
+| 概念 | 一句话 | crate |
+|---|---|---|
+| `Ctx` | 服务定位器：按**名字 + 类型**找服务，类型不符等于没找到 | `echo-context` |
+| `Disposer` | 撤销句柄：`drop` 即撤销那次注册 | `echo-context` |
+| `EventBus` | 事件总线：`Observe` / `Waterfall` / `Parallel` / `Serial` 四种分发 | `echo-context` |
+| `Plugin` + `Registry` | 插件 = manifest + 一次挂载；注册表管 `register → mount → unmount` | `echo-plugin` |
+| `PluginScope` | 插件树：一层 = 一个 `Ctx` + 一个注册表，父链继承、子遮蔽父 | `echo-plugin` |
+
+读法：用 `Disposer` 保证可撤销，用 `Ctx` 表达依赖，用 `Scope` 表达归属，用
+`EventBus` 表达通知，用运输层决定这些发生在进程内还是进程外。
+
+## 两种形态
+
+| | 进程内（`InprocTransport`） | 进程外（`StdioTransport`） |
+|---|---|---|
+| 插件是 | 编译进宿主的 Rust 对象 | 独立二进制，stdin/stdout |
+| 调用开销 | 零序列化 | 每帧一次 JSON |
+| 崩溃影响 | 带崩宿主 | 隔离；supervisor 退避重启 |
+| 语言 | 只能 Rust | 任意语言 |
+| 适合 | 同团队、同步发布、热路径 | 第三方、高权限、可能失控 |
+
+## 跑起来
 
 ```bash
-cargo test --workspace   # 221 项（含 doctest）
-```
-
-**它能被别的应用用吗？** 这是唯一有意义的问题，所以有一个可执行的证伪测试：
-
-```bash
+cargo test --workspace        # 222 项，全绿
 cargo build -p minimal-plugin && cargo run -p minimal-host
 # ✅ 全部断言通过——这套框架可以在非 EchoAgent 的宿主里独立使用
 ```
 
-`examples/minimal-host`（130 行）与 `examples/minimal-plugin`（70 行）只依赖
-框架六件套，**不引入** `echo-defs` / `echo-agent`。
-
-跨语言也验过：`examples/minimal-plugin-py/plugin.py` 是纯 Python 插件，零 Rust
-依赖，由 `cargo test -p echo-plugin-host --test cross_language` 真跑。详见
-[examples/README.md](./examples/README.md) 与 [快速上手](./docs/getting-started.md)。
-
-**文档**：[`document/`](./document/index.md) 是 ProDoc 文档图（10 篇，`echo-prodoc
-check` 通过）——按「为什么 → 核心模型 → 六件套 → 插件语义 → 生命周期 / 运输层 /
-配置 → 上手 → 边界」组织，适合先读一遍再动手；`docs/getting-started.md` 是单篇
-速查版。
-
-**零全局态现在是无条件成立的**（v0.3.0）：原 `echo-context::kernel`（进程级
-单例表）已搬到宿主侧。理由：使用者全在应用层（8 处），框架一处不用；框架导出
-进程级单例表会直接破坏「同一进程能起两套宿主」这个复用前提。
-
-**唯一尚未达标的点**：协议表面仍带领域分类贡献（`Contribution::Tool` /
-`Skill` / `PluginInstance`），去业务化排在 M5 且有兼容门槛（需 2 个以上真实
-外部使用者）。
-
-> 文档注释里少量 `document/design/*.md` 路径指向 EchoAgentCore 仓库——那是本仓
-> 前身所在地，第三方文档随 M4 迁来。
+`minimal-host`（约 160 行）与 `minimal-plugin`（约 70 行）只依赖框架，不引入任何
+业务 crate。那个 ✅ 不是装饰：示例里有 `assert!`，任何一步不符即非零退出。
 
 ## 写一个插件
 
-依赖两行：
-
 ```toml
-[dependencies]
 echo-plugin-sdk = { git = "https://github.com/EchoLab-Auto/echo-fabric-arch", tag = "v0.11.2" }
-tokio = { version = "1", features = ["full"] }
 ```
 
-实现 `PluginHandler`（或 `InstancePlugin`），其余交给 SDK：
-
 ```rust
-use echo_plugin_sdk::{
-    async_trait, serve_stdio, Contribution, InvokeOutcome, InvokeRequest, PluginHandler,
-};
+use echo_plugin_sdk::{async_trait, serve_stdio, Contribution, InvokeOutcome,
+                      InvokeRequest, PluginHandler};
 
-struct MyPlugin;
+struct Greeter;
 
 #[async_trait]
-impl PluginHandler for MyPlugin {
+impl PluginHandler for Greeter {
     fn contributions(&self) -> Vec<Contribution> { vec![] }
-    async fn invoke(&self, _req: InvokeRequest) -> InvokeOutcome {
-        InvokeOutcome::ok("ok")
+    async fn invoke(&self, req: InvokeRequest) -> InvokeOutcome {
+        let name = req.payload.get("name").and_then(|v| v.as_str()).unwrap_or("world");
+        InvokeOutcome::ok(format!("hello, {name}"))
     }
 }
 
 #[tokio::main]
 async fn main() {
-    if let Err(e) = serve_stdio(MyPlugin).await {
-        eprintln!("plugin exited: {e}");
+    if let Err(e) = serve_stdio(Greeter).await {
+        eprintln!("plugin exited: {e}");     // 日志一律走 stderr
         std::process::exit(1);
     }
 }
 ```
 
-SDK 承担的东西（自己写一遍大约 450 行，且每处都容易错）：
+两条硬规矩：**帧只走 stdout，日志必须走 stderr**（往 stdout 打一个字节就破坏协议）；
+别自己写握手与分帧（SDK 已处理分段到达、单写者串行写出、`Cancel` / `Drain`）。
 
-- **帧读写**：4 字节小端 `u32` 长度前缀 + JSON，读侧容忍分段到达
-- **握手**：`Hello` → 校验协议名/版本 → `Welcome` + `Register` + `Ready`；不兼容时
-  写 `Failed` 并退出（不是静默跑起来）
-- **并发**：每个 `Invoke` 一个任务，结果经内部 mpsc 交由**单写者**串行写出——
-  帧不会交错
-- **生命周期**：`Cancel` / `Drain` / `Dispose` / stdin EOF 的语义
-- **回呼**：`HostClient` 向宿主注册的服务发起 `HostCall`（默认 30s 超时）
+## 装进宿主
 
-约定：**帧只走 stdout，插件日志走 stderr**。
+```rust
+use echo_plugin_host::{stdio::StdioTransport, supervisor::PluginSupervisor,
+                       transport::PluginSpec};
+
+let handle = PluginSupervisor::new()
+    .start(PluginSpec { plugin_id: "demo.greeter".into(), config: json!({}) },
+           Box::new(StdioTransport::new("./target/debug/greeter")))
+    .await?;                                     // 握手完成才返回，失败即 Err
+
+handle.invoke("greeter", Default::default(), json!({ "name": "you" })).await;
+handle.drain(Duration::from_secs(5)).await?;     // 优雅退出
+```
+
+`start()` 内部：spawn → `Hello` → 校验协议名与版本 → 收 `Register` → 等 `Ready`。
+任何一步失败都返回 `Err`，不会给你一个半可用的句柄。`invoke` 与 `drain` 的完整
+写法见[快速上手](./docs/getting-started.md)。
+
+## 怎么组织一个应用
+
+| 你写的 | 放哪 | 判据 |
+|---|---|---|
+| 业务逻辑 | 独立 crate，**零框架依赖** | 它要能被 CLI 直接调用吗 |
+| 跨插件/跨进程的 DTO 与 trait | 契约 crate，只依赖 serde | 双方都要编译它吗 |
+| 装配、注册、生命周期 | 宿主 `main.rs`（唯一组合根） | 只有它知道全局拓扑 |
+| 配置、持久化、HTTP、日志 | 你选的库 | 框架不管这些 |
+
+最容易踩的两条线：**能力层不 `use` 框架**（否则没框架的用法就死了）；
+**别给未来的需求预留 trait**（框架自己有过一次零调用点的预留，后来全删）。
+
+## 文档
+
+- [`document/`](./document/index.md) — 11 篇设计文档（ProDoc 文档图），从「为什么」
+  到「边界」；代码怎么摆看[组织一个应用](./document/structure.md)
+- [`docs/getting-started.md`](./docs/getting-started.md) — 单篇速查：写插件、装插件、
+  进程内、崩溃隔离、跨语言
+- [`examples/`](./examples) — 三个可跑示例（Rust 宿主 / Rust 插件 / Python 插件）
+
+crate 清单：`echo-context`（内核）、`echo-plugin`（生命周期）、`echo-plugin-api`
+（冻结协议）、`echo-plugin-host`（宿主角）、`echo-plugin-sdk`（插件侧）、
+`echo-plugin-loader`（分层配置）；另有 `framework-gates`，只含门禁测试。
 
 ## 版本与兼容
 
-- 本仓**单一版本号**（workspace 共享）。0.x 期间允许 breaking，记入
+- 单一版本号（workspace 共享）。0.x 期间允许 breaking，逐条记入
   [CHANGELOG.md](./CHANGELOG.md)。
-- `PROTOCOL_VERSION`（线上契约版本）与 crate 版本**独立**：
-  - 改线上帧格式 → bump `PROTOCOL_VERSION`，握手拒绝旧端（fail-closed）
-  - 只改 Rust API 表面 → bump crate 版本即可
-  - 新增字段一律 `#[serde(default)]`，两端可互换解码
-- 消费方建议用 `tag = "v0.x.y"` 钉住；Cargo.lock 会进一步钉死 rev。
+- `PROTOCOL_VERSION` 与 crate 版本**独立**：改线上帧格式才 bump 协议版本（握手
+  fail-closed 拒绝旧端）；只改 Rust API 表面只 bump crate 版本。
+- 新增字段一律 `#[serde(default)]`，两端可互换解码。消费方用 `tag = "v0.x.y"` 钉住。
 
-## 开发
+## 不做什么
 
-```bash
-cargo test        # 同上（本仓单一测试入口，数字只看上面那一处，别在两处各写一份）
-cargo clippy --all-targets -- -D warnings
-```
+不定义业务（没有「工具」「会话」「人格」这类概念，`kind` 是开放字符串）、不管
+持久化、不做权限模型（进程外只做资源隔离，进程内假定可信）、不提供容器（组合根
+是你的 `main()`）。
+
+什么时候**不该**用它：插件集合编译期固定、永不变动（一个 `enum` 分派就够）；只想
+要依赖注入（单拿 `echo-context`）；要求插件与宿主共享复杂 Rust 类型（做不到）。
+
+**已知缺口**：协议表面仍带 `Tool` / `Skill` / `PluginInstance` 三个领域分类（历史
+遗留），去业务化需 2 个以上真实外部使用者才动手。
 
 ## License
 

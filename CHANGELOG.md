@@ -3,7 +3,26 @@
 本仓遵循 [语义化版本](https://semver.org/lang/zh-CN/)。0.x 期间允许 breaking，
 但每一处都记在这里。`PROTOCOL_VERSION` 是**线上契约**版本，与 crate 版本独立
 （判定规则见 [README](./README.md#版本与兼容)）。
-（判定规则见 [README](./README.md#版本与兼容)）。
+
+## [未发布]
+
+### 变更
+
+- `Ctx::keys()` 的返回顺序改为**按名字排序**。底层是 `HashMap`（迭代顺序随机），
+  而这份清单会进 `MissingService.available`（给人看的错误信息）与面板——随机顺序
+  会让同一个错误每次长得不一样。顺带让文档里的示例输出可以固定下来。
+
+### 文档
+
+- `README.md` 重写：去掉版本历史叙述（已由本文件承载），改为「问题 → 概念 →
+  两种形态 → 跑起来 → 写插件 → 装进宿主 → 怎么组织应用 → 文档」的短结构。
+- 新增 [`document/structure.md`](./document/structure.md)「组织一个应用」：四层结构、
+  五条纪律、一段代码该放哪的判据、两个反例、可搬的最小骨架。
+- 修 `document/quickstart.md` 里过期的 `tag = "v0.7.0"`（应为 `v0.11.2`）。
+- 修 `document/crates.md` 流程图里的 `-.门禁.->` 虚线语法——ProDoc 只支持
+  `-->` 与 `-->|标签|`，那两行原本会被解析器跳过。
+- 对齐 `examples/README.md` 与 `docs/getting-started.md` 的行数与预期输出
+  （`keys()` 排序后输出固定）。
 
 ## [0.11.2] — 2026-11-28
 

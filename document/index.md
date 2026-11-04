@@ -1,7 +1,7 @@
 ---
 id: index
 title: echo-fabric-arch
-link: ["why | 为什么需要它", "quickstart | 上手", "boundaries | 边界与纪律"]
+link: ["why | 为什么需要它", "quickstart | 上手", "structure | 组织应用", "boundaries | 边界与纪律"]
 ---
 
 # echo-fabric-arch
@@ -49,6 +49,7 @@ link: ["why | 为什么需要它", "quickstart | 上手", "boundaries | 边界�
 
 - 想知道它为什么长这样 → [为什么需要它](./why.md)
 - 想立刻跑起来 → [上手](./quickstart.md)
+- 想知道代码怎么摆 → [组织一个应用](./structure.md)
 - 想确认能不能用在你的项目 → [边界与纪律](./boundaries.md)
 
 ```prodoc-flow

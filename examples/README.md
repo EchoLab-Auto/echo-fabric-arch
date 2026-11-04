@@ -25,7 +25,7 @@ cargo run -p minimal-host
 ```
 [1] Ctx 就绪：keys = ["host-version"]
     require(host-version) = 0.1.0
-[2] 进程内插件已挂载（错误 []），Ctx keys = ["host-version", "counter"]
+[2] 进程内插件已挂载（错误 []），Ctx keys = ["counter", "host-version"]
 [3] 进程外插件就绪：state=Ready，贡献 ["service:greeter"]
 [4] Invoke(greeter) → Ok { text: "{\"greeting\":\"hello, echo-fabric-arch\"}", ... }
 [5] 已卸载进程内插件：Ctx keys = ["host-version"]，撤销次数 = 1，卸载前计数 = 41
@@ -43,7 +43,7 @@ Python 插件由 `cargo test -p echo-plugin-host --test cross_language` 驱动
 
 ## 各自在证明什么
 
-**`minimal-host`**（约 130 行）
+**`minimal-host`**（约 160 行）
 
 - **服务定位器**：`Ctx` + 强类型 `ServiceKey`，注册返回 `Disposer`（撤销句柄）
 - **进程内插件**：`Plugin` trait + 挂载闭包；`mount` 是一次可撤销的副作用
@@ -61,7 +61,7 @@ Python 插件由 `cargo test -p echo-plugin-host --test cross_language` 驱动
 
 插件作者**不需要**知道有这些。这就是 SDK 的全部意义。
 
-**`minimal-plugin-py`**（约 150 行，含协议注释）
+**`minimal-plugin-py`**（约 170 行，含协议注释）
 
 完全不碰 Rust：读 4 字节长度 → 读 JSON → 应答。文件头把线上协议完整写了一遍
 （帧格式、握手顺序、消息形状、生命周期），可以直接当"用任何语言写插件"的参考。

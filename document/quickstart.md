@@ -19,7 +19,7 @@ group: 实践
 
 ```toml
 [dependencies]
-echo-plugin-sdk = { git = "https://github.com/EchoLab-Auto/echo-fabric-arch", tag = "v0.7.0" }
+echo-plugin-sdk = { git = "https://github.com/EchoLab-Auto/echo-fabric-arch", tag = "v0.11.2" }
 tokio = { version = "1", features = ["full"] }
 serde_json = "1"
 ```
