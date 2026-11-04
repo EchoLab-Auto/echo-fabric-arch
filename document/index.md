@@ -1,10 +1,10 @@
 ---
 id: index
-title: plugin-framework
+title: echo-fabric-arch
 link: ["why | 为什么需要它", "quickstart | 上手", "boundaries | 边界与纪律"]
 ---
 
-# plugin-framework
+# echo-fabric-arch
 
 一套**业务无关的 Rust 插件机制**：插件怎么声明"我能提供什么"、宿主怎么装载
 与撤销、进程内的插件与独立进程的插件用同一套语义。

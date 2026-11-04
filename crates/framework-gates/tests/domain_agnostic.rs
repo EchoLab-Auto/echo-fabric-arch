@@ -1,6 +1,6 @@
 //! 框架仓自守门禁 #3：**领域无关性**。
 //!
-//! 判据（EchoAgentCore `document/design/plugin-framework-extraction.md` §2.1）：
+//! 判据（EchoAgentCore `document/design/echo-fabric-arch-extraction.md` §2.1）：
 //! 框架 crate 的生产代码不认识应用领域词汇；框架 crate 不依赖领域/内核 crate。
 //!
 //! 覆盖范围**暂时不含** `echo-plugin-api` / `echo-plugin-sdk`：协议的贡献分类

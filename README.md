@@ -1,4 +1,4 @@
-# plugin-framework
+# echo-fabric-arch
 
 业务无关的 Rust 插件化框架：**插件契约 + 插件侧运行时**。
 
@@ -68,7 +68,7 @@ check` 通过）——按「为什么 → 核心模型 → 六件套 → 插件�
 
 ```toml
 [dependencies]
-echo-plugin-sdk = { git = "https://github.com/EchoLab-Auto/plugin-framework", tag = "v0.11.2" }
+echo-plugin-sdk = { git = "https://github.com/EchoLab-Auto/echo-fabric-arch", tag = "v0.11.2" }
 tokio = { version = "1", features = ["full"] }
 ```
 

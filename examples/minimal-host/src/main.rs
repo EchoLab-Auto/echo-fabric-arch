@@ -124,14 +124,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .invoke(
             "greeter",
             InvokeContext::default(),
-            json!({ "name": "plugin-framework" }),
+            json!({ "name": "echo-fabric-arch" }),
         )
         .await;
     println!("[4] Invoke(greeter) → {outcome:?}");
     // 这个示例同时是**可执行的证伪测试**：断言失败即非零退出，CI 直接红。
     assert!(
         matches!(&outcome, echo_plugin_host::api::InvokeOutcome::Ok { text, .. }
-            if text.contains("hello, plugin-framework")),
+            if text.contains("hello, echo-fabric-arch")),
         "进程外插件调用结果不符合预期：{outcome:?}"
     );
 

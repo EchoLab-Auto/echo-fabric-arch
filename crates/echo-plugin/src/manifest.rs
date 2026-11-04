@@ -71,7 +71,7 @@ pub struct PluginManifest {
     /// 历史：这里曾是 8 个变体的领域枚举（宿主应用的分类词汇），被误写进
     /// 框架契约——第三方宿主用 `kind = "widget"` 会当场解析失败。改为字符串
     /// 后词汇表归宿主，框架只透传。来龙去脉见
-    /// `document/design/plugin-framework-extraction.md` §M2。
+    /// `document/design/echo-fabric-arch-extraction.md` §M2。
     ///
     /// [`PluginDescriptor::kind`]: crate::registry::PluginDescriptor::kind
     pub kind: String,

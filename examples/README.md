@@ -27,7 +27,7 @@ cargo run -p minimal-host
     require(host-version) = 0.1.0
 [2] 进程内插件已挂载（错误 []），Ctx keys = ["host-version", "counter"]
 [3] 进程外插件就绪：state=Ready，贡献 ["service:greeter"]
-[4] Invoke(greeter) → Ok { text: "{\"greeting\":\"hello, plugin-framework\"}", ... }
+[4] Invoke(greeter) → Ok { text: "{\"greeting\":\"hello, echo-fabric-arch\"}", ... }
 [5] 已卸载进程内插件：Ctx keys = ["host-version"]，撤销次数 = 1，卸载前计数 = 41
 [5] 进程外插件已排空退出（state=Stopped）
 

@@ -8,7 +8,7 @@
 //! 为什么门禁在框架仓而不是宿主仓：宿主侧的 `scripts/deps-policy.txt` 只扫
 //! 自己的 `source/` 目录树，本仓的 crate 迁出后**自动不在扫描范围内**——
 //! 那边的保护随迁移消失，必须由本仓补上等价断言（见 EchoAgentCore 的
-//! `document/design/plugin-framework-extraction.md` §4.2）。
+//! `document/design/echo-fabric-arch-extraction.md` §4.2）。
 //!
 //! 白名单只有一条：`echo-plugin-sdk` → `echo-plugin-api`（同仓内上下游）。
 

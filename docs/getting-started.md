@@ -21,7 +21,7 @@
 
 ```toml
 [dependencies]
-echo-plugin-sdk = { git = "https://github.com/EchoLab-Auto/plugin-framework", tag = "v0.11.2" }
+echo-plugin-sdk = { git = "https://github.com/EchoLab-Auto/echo-fabric-arch", tag = "v0.11.2" }
 tokio = { version = "1", features = ["full"] }
 ```
 

@@ -20,7 +20,7 @@ version = "0.11.2"
 edition = "2021"
 rust-version = "1.98"
 license = "MIT"
-repository = "https://github.com/EchoLab-Auto/plugin-framework"
+repository = "https://github.com/EchoLab-Auto/echo-fabric-arch"
 
 # 只列**通用第三方库**。本仓不允许出现面向具体应用的依赖
 # （由 `crates/framework-gates` 的门禁守着）。
