@@ -66,8 +66,10 @@ tag 已经占了那个名字，重复键会让整帧解析失败（`Service` 变
 
 ### 文档
 
-- `document/boundaries.md` §二点五重写为「领域词汇已经清零」，把审计的实测数据
-  （谁用过、零使用者、EchoAgentCore 已不依赖本仓）写进决策记录。
+- `document/boundaries.md`：把「领域残留的实况」并入 §三「名字 + 存在性，而不是
+  类型」——两节讲的是同一条原则在两处（服务表 / 协议）的落地，分开写会让读者
+  以为是两件事。审计的实测数据（谁用过、零使用者、EchoAgentCore 已不依赖本仓）
+  与白名单机制作为「它怎么被强制执行」保留在同一节里。
 - `README` / `crates.md` / `why.md` / `quickstart.md` / `getting-started.md` 中
   关于"协议表面尚未收敛"的表述同步更新。
 
