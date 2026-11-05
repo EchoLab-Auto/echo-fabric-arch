@@ -1,22 +1,22 @@
 [workspace]
 resolver = "2"
 members = [
-    # ── 装配层（宿主 + 插件两侧）─────────────────────────────────────────
+    # ── 装配层（宿主 + 模块两侧）─────────────────────────────────────────
     "crates/echo-context",
-    "crates/echo-plugin-api",
-    "crates/echo-plugin-loader",
-    "crates/echo-plugin",
-    "crates/echo-plugin-host",
-    "crates/echo-plugin-sdk",
+    "crates/echo-module-api",
+    "crates/echo-module-loader",
+    "crates/echo-module",
+    "crates/echo-module-host",
+    "crates/echo-module-sdk",
     # 仓库自守门禁（只含 tests/，审计跨 crate 的仓库属性）
     "crates/framework-gates",
     # 示例：证明框架可被任何 Rust 应用使用（M4 的证伪测试）
     "examples/minimal-host",
-    "examples/minimal-plugin",
+    "examples/minimal-module",
 ]
 
 [workspace.package]
-version = "0.14.0"
+version = "0.15.0"
 edition = "2021"
 rust-version = "1.98"
 license = "MIT"
@@ -45,16 +45,16 @@ async-trait = "0.1"
 base64 = "0.22"
 dashmap = "6"
 
-# 子进程资源限额（setrlimit）：仅 Unix 生效，见 `echo-plugin-host::stdio`。
+# 子进程资源限额（setrlimit）：仅 Unix 生效，见 `echo-module-host::stdio`。
 libc = "0.2"
 
 # 本仓内部 crate
 echo-context = { path = "crates/echo-context" }
-echo-plugin-api = { path = "crates/echo-plugin-api" }
-echo-plugin-loader = { path = "crates/echo-plugin-loader" }
-echo-plugin = { path = "crates/echo-plugin" }
-echo-plugin-host = { path = "crates/echo-plugin-host" }
-echo-plugin-sdk = { path = "crates/echo-plugin-sdk" }
+echo-module-api = { path = "crates/echo-module-api" }
+echo-module-loader = { path = "crates/echo-module-loader" }
+echo-module = { path = "crates/echo-module" }
+echo-module-host = { path = "crates/echo-module-host" }
+echo-module-sdk = { path = "crates/echo-module-sdk" }
 
 # dev
 proptest = "1"

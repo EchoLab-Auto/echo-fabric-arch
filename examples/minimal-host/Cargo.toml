@@ -9,7 +9,7 @@ description = "最小宿主示例：只用框架六件套，不依赖任何宿�
 
 [dependencies]
 echo-context = { workspace = true }
-echo-plugin = { workspace = true }
-echo-plugin-host = { workspace = true }
+echo-module = { workspace = true }
+echo-module-host = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }

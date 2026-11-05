@@ -32,19 +32,19 @@ jobs:
       - name: 测试
         run: cargo test --workspace --locked
 
-      # 证伪测试：最小宿主 + 最小插件能否在**非本应用**的宿主里跑通。
-      # 先构建插件二进制（宿主会 spawn 它），再跑宿主；示例内部有 assert，
+      # 证伪测试：最小宿主 + 最小模块能否在**非本应用**的宿主里跑通。
+      # 先构建模块二进制（宿主会 spawn 它），再跑宿主；示例内部有 assert，
       # 任何一步不对都非零退出。
       - name: 示例端到端（框架可独立使用的证据）
         run: |
-          cargo build --locked -p minimal-plugin
+          cargo build --locked -p minimal-module
           cargo run --locked -p minimal-host
 
-      # 跨语言：Python 插件手写帧，不碰 Rust。证明「协议即 ABI」。
-      - name: 跨语言插件（Python 走同一份协议）
+      # 跨语言：Python 模块手写帧，不碰 Rust。证明「协议即 ABI」。
+      - name: 跨语言模块（Python 走同一份协议）
         run: |
           python3 --version
-          cargo test --locked -p echo-plugin-host --test cross_language
+          cargo test --locked -p echo-module-host --test cross_language
 
       # clippy 只作为警告展示，不阻断（迁出期先让 CI 稳定；M4 收紧为 -D warnings）
       - name: Clippy

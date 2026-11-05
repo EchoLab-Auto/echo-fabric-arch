@@ -4,22 +4,26 @@
 但每一处都记在这里。`PROTOCOL_VERSION` 是**线上契约**版本，与 crate 版本独立
 （判定规则见 [README](./README.md#版本与兼容)）。
 
+## [0.15.0] — 未发布（breaking）
+
+- 全仓统一采用 **Module / module / 模块** 命名：crate、API、协议、配置、示例与文档均由旧命名体系迁移。
+
 ## [0.14.0] — 未发布（breaking）
 
 ### 移除：贡献分类里的领域词汇
 
 `Contribution` 曾有五个变体，其中三个是**应用领域分类**：面向模型的工具声明
 （含 JSON Schema、UI 分类、"是否产生平台可见回复"）、技能目录（`SKILL.md`
-路径）、聊天平台插件实例（平台名、能力位、会话标签、UI 描述符）。
+路径）、聊天平台模块实例（平台名、能力位、会话标签、UI 描述符）。
 
 2026-11 审计确认它们**零真实使用者**：EchoAgentCore 已经不依赖本仓（用自己
 仓库内的副本），本仓内部只有测试与 conformance 夹具在构造它们。删掉的是：
 
-- `Contribution::{Tool, Skill, PluginInstance}`
+- `Contribution::{Tool, Skill, ModuleInstance}`
 - `ToolContribution` / `SkillContribution` / `InstanceContribution` /
   `InstanceCapabilities`
-- SDK 的 `InstancePlugin` / `InstanceHandler` / `serve_instance_stdio`
-- `capabilities::{TOOLS, SKILLS, PLUGIN_INSTANCE}`
+- SDK 的 `InstanceModule` / `InstanceHandler` / `serve_instance_stdio`
+- `capabilities::{TOOLS, SKILLS, MODULE_INSTANCE}`
 
 ### 新增：`Contribution::Custom`
 
@@ -29,7 +33,7 @@
 Contribution::Custom {
     custom_kind: String,   // 宿主自己的分类（"report_generator" / 任何字符串）
     name: String,          // Invoke 寻址名（空 = 不参与寻址）
-    payload: Value,        // 宿主与插件自行约定，框架不校验
+    payload: Value,        // 宿主与模块自行约定，框架不校验
 }
 ```
 
@@ -47,16 +51,16 @@ tag 已经占了那个名字，重复键会让整帧解析失败（`Service` 变
 
 ### 协议兼容性：没有 bump `PROTOCOL_VERSION`
 
-删变体通常是线上格式变更。这次没 bump，理由可验证：**没有任何真实插件发送过
-那三个分类**（唯一的生产者是 echo-server-core 的面板插件，它只发 `Service`）。
-新宿主能解的帧集合小了一圈，但实际在跑的插件一个都没受影响。
+删变体通常是线上格式变更。这次没 bump，理由可验证：**没有任何真实模块发送过
+那三个分类**（唯一的生产者是 echo-server-core 的面板模块，它只发 `Service`）。
+新宿主能解的帧集合小了一圈，但实际在跑的模块一个都没受影响。
 
-若将来发现确有外部插件在用，正确做法不是回退，而是让它改发 `Custom`——那才是
+若将来发现确有外部模块在用，正确做法不是回退，而是让它改发 `Custom`——那才是
 它本来就该用的形状。
 
 ### 门禁
 
-- 领域词审计不再排除 `echo-plugin-api` / `echo-plugin-sdk`（此前排除等于这两个
+- 领域词审计不再排除 `echo-module-api` / `echo-module-sdk`（此前排除等于这两个
   crate 里新增任何领域词都不会被发现，而那正是业务类型能长进来的原因）。改为
   `KNOWN_DOMAIN_RESIDUE` 白名单：已知残留逐条登记，新增的报错。**本次清空至零条**。
 - 新增防腐烂测试 `known_residue_entries_must_still_be_needed`：白名单条目一旦
@@ -107,15 +111,15 @@ tag 已经占了那个名字，重复键会让整帧解析失败（`Service` 变
   同步的 `HostService` 保留（旧实现零改动），注册表在调用时抹平差异：异步版直接
   await，同步版挪到 `spawn_blocking`（不占 tokio worker；无运行时上下文时内联）。
 
-- **`CallContext::caller`**：本次回呼的来源插件 id，**由 supervisor 从连接归属
-  填写**，线上协议里没有这个字段 —— 插件无法伪装成别的插件。宿主服务据此做来源
+- **`CallContext::caller`**：本次回呼的来源模块 id，**由 supervisor 从连接归属
+  填写**，线上协议里没有这个字段 —— 模块无法伪装成别的模块。宿主服务据此做来源
   授权与审计。同步 trait 没有这个参数（签名不变，向后兼容）。
 
-- **`PluginHandle::wait_until(contribution, ctx, payload, timeout, predicate)`**：
-  「握手完成」不等于「插件内部的服务真的起来了」。轮询 + 超时 + 判据这套就绪探测
+- **`ModuleHandle::wait_until(contribution, ctx, payload, timeout, predicate)`**：
+  「握手完成」不等于「模块内部的服务真的起来了」。轮询 + 超时 + 判据这套就绪探测
   每个宿主都会写一遍，收进框架。
 
-- **`PluginScope::snapshot()` → `PluginTreeSnapshot`**（可序列化）：把作用域 +
+- **`ModuleScope::snapshot()` → `ModuleTreeSnapshot`**（可序列化）：把作用域 +
   注册表投影成只读树。遍历、父子拼接、`ready/pending/failed/disabled` 判定原本
   每个宿主都要重写一遍（重写就会与框架语义漂移）。
 
@@ -145,7 +149,7 @@ tag 已经占了那个名字，重复键会让整帧解析失败（`Service` 变
 ### 文档
 
 - `README.md` 重写：去掉版本历史叙述（已由本文件承载），改为「问题 → 概念 →
-  两种形态 → 跑起来 → 写插件 → 装进宿主 → 怎么组织应用 → 文档」的短结构。
+  两种形态 → 跑起来 → 写模块 → 装进宿主 → 怎么组织应用 → 文档」的短结构。
 - 新增 [`document/structure.md`](./document/structure.md)「组织一个应用」：四层结构、
   五条纪律、一段代码该放哪的判据、两个反例、可搬的最小骨架。
 - 修 `document/quickstart.md` 里过期的 `tag = "v0.7.0"`。
@@ -157,7 +161,7 @@ tag 已经占了那个名字，重复键会让整帧解析失败（`Service` 变
 
 ### 新增
 
-- `PluginHandle::upgrade_preserving_contributions`：面向“宿主在启动期物化贡献注册表”的兼容热替换。新实例握手后、流量切换前比对完整贡献集合；工具/schema/实例等贡献有任何变化即关闭 replacement、保留旧实例并返回明确错误，避免只换进程造成宿主注册表与插件能力漂移。
+- `ModuleHandle::upgrade_preserving_contributions`：面向“宿主在启动期物化贡献注册表”的兼容热替换。新实例握手后、流量切换前比对完整贡献集合；工具/schema/实例等贡献有任何变化即关闭 replacement、保留旧实例并返回明确错误，避免只换进程造成宿主注册表与模块能力漂移。
 
 ## [0.11.1] — 2026-11-21
 
@@ -165,9 +169,9 @@ tag 已经占了那个名字，重复键会让整帧解析失败（`Service` 变
 
 - `ServiceSlot<T>`：**在 `mount` 时解析、在处理时取用**的服务槽。
 
-  插件的依赖常常是这样的形状：只有 `mount` 期间能查服务表（`MountContext`），
-  而真正用到宿主能力的地方是命令处理器 / 事件回调——那些闭包在构造插件时就
-  得交出去。手写 `Arc<RwLock<Option<T>>>` + "卸载时清空"在每个插件里都长得
+  模块的依赖常常是这样的形状：只有 `mount` 期间能查服务表（`MountContext`），
+  而真正用到宿主能力的地方是命令处理器 / 事件回调——那些闭包在构造模块时就
+  得交出去。手写 `Arc<RwLock<Option<T>>>` + "卸载时清空"在每个模块里都长得
   一样，而且极易漏掉清空（拿旧宿主的句柄继续跑）。
 
   `slot.bind(mctx, &KEY)?` 一步完成：解析（缺失即 `MissingService`）+ 记录
@@ -175,23 +179,23 @@ tag 已经占了那个名字，重复键会让整帧解析失败（`Service` 变
 
 ## [0.11.0] — 2026-11-21
 
-**插件零捕获**：`MountContext` 现在能自己解析宿主提供的能力，于是
-`mount` 闭包不必再捕获 `Arc<dyn SomeHost>` 这类运行期句柄，插件构造退化成
-`plugin(version)`。
+**模块零捕获**：`MountContext` 现在能自己解析宿主提供的能力，于是
+`mount` 闭包不必再捕获 `Arc<dyn SomeHost>` 这类运行期句柄，模块构造退化成
+`module(version)`。
 
 ### 新增
 
 - `MountContext::service<T>(&ServiceKey<T>) -> Option<T>`：从服务表解析；
-- `MountContext::require<T>(&ServiceKey<T>) -> Result<T, PluginMountError>`：
+- `MountContext::require<T>(&ServiceKey<T>) -> Result<T, ModuleMountError>`：
   缺失即挂载失败，错误带 `available` 全部键名；
 - `MountContext::context() -> Option<&Arc<Ctx>>`：需要 `provide` 或条件解析时
   取服务表本身。
 
 ### 为什么这属于框架
 
-「宿主把句柄塞进闭包」与「插件按键解析」是**同一件事的两种写法**，但后者
+「宿主把句柄塞进闭包」与「模块按键解析」是**同一件事的两种写法**，但后者
 让**目录**（谁存在）与**接线**（各自需要什么）解耦：组合根可以写
-`push(catalog, tools::plugin(version))`，把「哪个 trait 对象给哪个插件」交给
+`push(catalog, tools::module(version))`，把「哪个 trait 对象给哪个模块」交给
 服务表。这是 dsh `inject` 的**取用侧**——`inject()` 只声明，不取用。
 
 ### 不变
@@ -203,30 +207,30 @@ tag 已经占了那个名字，重复键会让整帧解析失败（`Service` 变
 ## [0.10.0] — 2026-11-20
 
 **运行态上收**：把「宿主为了用这套框架而必须自己维护的状态」收进注册表。
-动机很具体——把内置能力逐一搬成插件之后，下游宿主（`echo-agent`）里那个
-`PluginHost` 还剩 1,559 行，其中一大半是在**重新实现框架本该有的运行态**：
+动机很具体——把内置能力逐一搬成模块之后，下游宿主（`echo-agent`）里那个
+`ModuleHost` 还剩 1,559 行，其中一大半是在**重新实现框架本该有的运行态**：
 
 | 宿主自己维护的 | 为什么本来是框架的 |
 |---|---|
 | 缓存的 `MountContext` | `set_enabled` / `restart` / `reconcile` 每次都要它，宿主只能自己存一份 |
 | 事件订阅**兴趣集** | `emit` 是热路径（流式正文每 token 一条），没人订阅时要能一次原子读就返回 |
-| 投递**重入保护** | 插件的 `on_event` 里再 `emit` 会自递归 |
+| 投递**重入保护** | 模块的 `on_event` 里再 `emit` 会自递归 |
 | 投递**计数** | 排查「事件为什么没到」的第一手证据 |
 
 四者都与领域无关，任何宿主都会需要。
 
 ### 新增
 
-- `PluginRegistry::set_mount_ctx(ctx)` / `mount_ctx()`：缓存挂载上下文；
-- `PluginRegistry::enable(id, enabled)` / `restart_cached(id)` /
+- `ModuleRegistry::set_mount_ctx(ctx)` / `mount_ctx()`：缓存挂载上下文；
+- `ModuleRegistry::enable(id, enabled)` / `restart_cached(id)` /
   `reconcile_cached()`：**不需要再传 `MountContext`**（用缓存的那份；
   未设置 = 默认上下文，裸注册表语义不变）；
-- `PluginRegistry::has_event_subscribers()` / `wants_event(name)`：热路径
+- `ModuleRegistry::has_event_subscribers()` / `wants_event(name)`：热路径
   两道闸门（一次原子读 / 一次查表，都不序列化）；
-- `PluginRegistry::refresh_event_interest()`：重算兴趣集。**注册表自己在
+- `ModuleRegistry::refresh_event_interest()`：重算兴趣集。**注册表自己在
   挂载 / 卸载 / 启停 / 重启 / reconcile 之后调用**——宿主不必记得；
-- `PluginRegistry::deliver_event_guarded(event)`：投递 + 重入保护 + 计数；
-- `PluginRegistry::event_counters()`：`(投递成功, 丢弃/失败)`；
+- `ModuleRegistry::deliver_event_guarded(event)`：投递 + 重入保护 + 计数；
+- `ModuleRegistry::event_counters()`：`(投递成功, 丢弃/失败)`；
 - 新增私有模块 `runtime_state`（`RuntimeState` + `EventInterest`），带四项
   单元测试。
 
@@ -236,7 +240,7 @@ tag 已经占了那个名字，重复键会让整帧解析失败（`Service` 变
   `mount` 现在会刷新兴趣集（也要读 `enabled_state`）——那是自锁。改为
   「读判断 → 释放 → 动作 → 写状态 → 刷新」。
 - `enable(id, true)` 的语义明确写成**状态切换**（默认状态即"启用"，所以对
-  从未挂载过的插件是 no-op）。初始挂载仍走 `mount` / `mount_all`。
+  从未挂载过的模块是 no-op）。初始挂载仍走 `mount` / `mount_all`。
 
 ### 影响
 
@@ -250,44 +254,44 @@ tag 已经占了那个名字，重复键会让整帧解析失败（`Service` 变
 
 ### 新增
 
-- `Plugin::handle_command_async(name, payload) -> Option<BoxFuture<'a, Result<Value, String>>>`
-  （默认把同步版本包成 ready future，所以只实现同步版的插件照常工作）；
-- `PluginRegistry::dispatch_command_async(name, payload)`：宿主实际入口；
-- `BuiltinPlugin::with_command_handler_async`。
+- `Module::handle_command_async(name, payload) -> Option<BoxFuture<'a, Result<Value, String>>>`
+  （默认把同步版本包成 ready future，所以只实现同步版的模块照常工作）；
+- `ModuleRegistry::dispatch_command_async(name, payload)`：宿主实际入口；
+- `BuiltinModule::with_command_handler_async`。
 
 ### 为什么用 boxed future 而不是 `async fn`
 
-插件以 `Arc<dyn Plugin>` 存在，trait 必须**对象安全**，而原生 `async fn` in
+模块以 `Arc<dyn Module>` 存在，trait 必须**对象安全**，而原生 `async fn` in
 trait 不是对象安全的（AFIT 目前不支持 `dyn`）。`payload` 按值收是因为 future
 不能借调用方的栈。
 
 ## [0.8.0] — 2026-11-01
 
 补上最后两类"声明了没人读"的贡献：**命令处理**与**有序文本块**。至此协议里
-的六类贡献（Tool / Skill / Service / Events / PluginInstance / Command / Text）
+的六类贡献（Tool / Skill / Service / Events / ModuleInstance / Command / Text）
 在 inproc 轨上都有真实消费方。
 
 ### 新增 — 命令处理（`Contribution::Command`）
 
-- `CommandContribution { name, description }`：插件声明"这些命令我来处理"。
+- `CommandContribution { name, description }`：模块声明"这些命令我来处理"。
   命令名是**宿主词汇**（如 `RequestXxx`），框架只搬不解释。
-- `Plugin::handled_commands()` + `Plugin::handle_command(name, payload)`：
+- `Module::handled_commands()` + `Module::handle_command(name, payload)`：
   返回 `Some(Ok(v))` 处理了 / `Some(Err(e))` 认识但失败 / `None` 不认识。
-- `PluginRegistry::dispatch_command()`：按注册序问已挂载插件；`None` = 无人
-  处理（调用方走默认分支）。**只问已挂载的插件**——插件被禁用后命令自动回到
+- `ModuleRegistry::dispatch_command()`：按注册序问已挂载模块；`None` = 无人
+  处理（调用方走默认分支）。**只问已挂载的模块**——模块被禁用后命令自动回到
   "无人处理"，不需要在 dispatch 处特判。
-- `PluginRegistry::command_owner()`：诊断用（某条命令当前归谁）。
-- `PluginDescriptor.handled_commands`：面板能回答「这条命令谁在处理」。
+- `ModuleRegistry::command_owner()`：诊断用（某条命令当前归谁）。
+- `ModuleDescriptor.handled_commands`：面板能回答「这条命令谁在处理」。
 
 ### 新增 — 有序文本块（`Contribution::Text`）
 
 - `TextBlockContribution { key, label, order }`：只声明**身份与顺序**。
-- `Plugin::text_blocks()`（声明）+ `Plugin::text_block_content(key, context)`
+- `Module::text_blocks()`（声明）+ `Module::text_block_content(key, context)`
   （内容）——**两个方法分开是有意的**：描述符生成要能随时调用（纯读、无副
   作用），而内容依赖上下文（同一块在不同会话下可以不同）。
-- `PluginRegistry::collect_text_blocks(context)`：收集已挂载插件的块，按
+- `ModuleRegistry::collect_text_blocks(context)`：收集已挂载模块的块，按
   `order` 升序（等值保持注册序），**内容为空的块被丢掉**。
-- `PluginDescriptor.text_blocks`：面板能回答「这个插件贡献了哪些段落」。
+- `ModuleDescriptor.text_blocks`：面板能回答「这个模块贡献了哪些段落」。
 
 ### 为什么叫 `Text` 而不是 `Prompt`
 
@@ -305,26 +309,26 @@ trait 不是对象安全的（AFIT 目前不支持 `dyn`）。`payload` 按值�
 
 ### 新增
 
-- `PluginEvent { plugin, name, payload }`：一条插件事件。`plugin` 由**宿主**
-  填充（注册表在挂载时把 id 注入上下文），插件自己 emit 时不必知道 id。
-- 插件 → 宿主：`MountContext.events: Option<EventSink>` + `MountContext::emit`。
+- `ModuleEvent { module, name, payload }`：一条模块事件。`module` 由**宿主**
+  填充（注册表在挂载时把 id 注入上下文），模块自己 emit 时不必知道 id。
+- 模块 → 宿主：`MountContext.events: Option<EventSink>` + `MountContext::emit`。
   **没有出口 = 静默丢弃**（降级不是错误）——单测与无 Panel 的部署不需要它。
-- 宿主 → 插件：`Plugin::subscribed_events()`（默认空）+ `Plugin::on_event()`
-  （默认 `Ok`）+ `PluginRegistry::deliver_event()`（按名分发，`"*"` =
-  `ALL_EVENTS` 全收）。**只投给已挂载的插件**（未挂载不该有副作用，同款原则）；
+- 宿主 → 模块：`Module::subscribed_events()`（默认空）+ `Module::on_event()`
+  （默认 `Ok`）+ `ModuleRegistry::deliver_event()`（按名分发，`"*"` =
+  `ALL_EVENTS` 全收）。**只投给已挂载的模块**（未挂载不该有副作用，同款原则）；
   `on_event` 返回 `Err` 只计数不卸载——事件是观察通道，不是控制通道。
-- `BuiltinPlugin::with_subscriptions` / `with_event_handler`。
-- `MountContext.plugin_id`：本插件的 id（顺带让插件能自己打带 id 的日志）。
-- 注册表自己在挂/卸时发 `plugin.mounted` / `plugin.unmounted`（带 `id` /
-  `depth`）——插件树的变化因此可观测。
-- `PluginScope` 的子作用域**继承事件出口**：整棵树汇到同一接收方，靠 `depth`
+- `BuiltinModule::with_subscriptions` / `with_event_handler`。
+- `MountContext.module_id`：本模块的 id（顺带让模块能自己打带 id 的日志）。
+- 注册表自己在挂/卸时发 `module.mounted` / `module.unmounted`（带 `id` /
+  `depth`）——模块树的变化因此可观测。
+- `ModuleScope` 的子作用域**继承事件出口**：整棵树汇到同一接收方，靠 `depth`
   区分来源。
-- `PluginDescriptor.subscribed_events`：面板能回答「这个插件会对什么有反应」。
+- `ModuleDescriptor.subscribed_events`：面板能回答「这个模块会对什么有反应」。
 
 ### 为什么 emit 走 `MountContext` 而不是 trait 方法
 
-`emit` 是**挂载期之后也要能用**的能力（插件在运行期随时通知宿主），而
-`Plugin` 的 trait 方法拿不到 `MountContext`。把 sink 塞进上下文、让插件在
+`emit` 是**挂载期之后也要能用**的能力（模块在运行期随时通知宿主），而
+`Module` 的 trait 方法拿不到 `MountContext`。把 sink 塞进上下文、让模块在
 `mount` 里存一份（`Arc<dyn Fn>` 可克隆），与协议里 `Emit` 帧的
 "即发即走、无返回值"语义一致。`on_event` 走 trait 是因为它的调用方是宿主、
 时机是宿主决定的（推 vs 拉的分界）。
@@ -345,21 +349,21 @@ trait 不是对象安全的（AFIT 目前不支持 `dyn`）。`payload` 按值�
 
 ## [0.6.0] — 2026-11-01
 
-两块缺失的 dsh 语义补齐：**声明式 `inject` + 就绪等待**，以及**插件树 / 父 ctx**
-（父插件宿主化子插件、卸载级联）。v0.5.0 的 `required_services` 升级为完整的
+两块缺失的 dsh 语义补齐：**声明式 `inject` + 就绪等待**，以及**模块树 / 父 ctx**
+（父模块宿主化子模块、卸载级联）。v0.5.0 的 `required_services` 升级为完整的
 注入声明，旧写法继续生效（默认实现读 `inject().required`）。
 
 ### 新增 — 声明式注入
 
-- `Inject { required, optional }`（`echo-plugin`）：
-  - `required` 缺失 → 拒绝挂载（`PluginMountError::MissingService`，**mount
+- `Inject { required, optional }`（`echo-module`）：
+  - `required` 缺失 → 拒绝挂载（`ModuleMountError::MissingService`，**mount
     闭包不执行**）；
   - `optional` 只作声明（面板展示 / 宿主按需读），**不参与**挂载判定。
-- `Plugin::inject()` 是唯一真值；`Plugin::required_services()` 降为
+- `Module::inject()` 是唯一真值；`Module::required_services()` 降为
   `inject().required` 的便捷读法（兼容 v0.5.0 的覆写者）。
-- `BuiltinPlugin::with_inject` / `with_required_services`（后者等价于
+- `BuiltinModule::with_inject` / `with_required_services`（后者等价于
   `with_inject(Inject::new(..))`）。
-- `PluginDescriptor` 新增 `optional_services` / `pending_services`
+- `ModuleDescriptor` 新增 `optional_services` / `pending_services`
   （`#[serde(default)]`）：面板能回答「它要什么」与「此刻还缺什么」——后者与
   `error` 不同，是"事实"而非"上次尝试的结果"。
 
@@ -367,35 +371,35 @@ trait 不是对象安全的（AFIT 目前不支持 `dyn`）。`payload` 按值�
 
 - `Ctx::wait_for_keys(&[String], timeout)`（`echo-context`）：等一组键**全部**
   就绪，命中立即返回、超时给 `ServiceError::Missing{key, available}`。
-- `PluginRegistry::mount_when_ready(id, ctx, timeout)`：
+- `ModuleRegistry::mount_when_ready(id, ctx, timeout)`：
   **先等后挂**（不是"失败后重试"），中间不留空窗；`timeout = ZERO` 等价于
   `mount`。
-- `PluginRegistry::mount_all_when_ready(ctx, timeout)`：启动期按注册顺序批量
+- `ModuleRegistry::mount_all_when_ready(ctx, timeout)`：启动期按注册顺序批量
   等待挂载。
-- `PluginRegistry::reconcile(&ctx) -> ReconcileReport`：依赖变动后重新核对——
+- `ModuleRegistry::reconcile(&ctx) -> ReconcileReport`：依赖变动后重新核对——
   pending 里依赖已齐的挂上、已挂载但依赖消失的卸下并重新进 pending。**只看
   事实不看意图**：人主动禁用的、从没挂过也没 pending 记录的，一律不动。
-- `PluginRegistry::pending_inject()`：`id → 缺的键`，面板"待挂载"视图用。
+- `ModuleRegistry::pending_inject()`：`id → 缺的键`，面板"待挂载"视图用。
 
-### 新增 — 插件树 / 父 ctx（dsh `ctx.plugin()` 的对应物）
+### 新增 — 模块树 / 父 ctx（dsh `ctx.module()` 的对应物）
 
 - `Ctx::child()` / `parent()` / `depth()`：**父子作用域**。父链继承、子遮蔽父、
   子注册对父不可见。`resolve` / `contains` / `keys` / `service` 全部沿父链查找。
 - `Ctx::on_change(f) -> Disposer` + `Change::{Provided, Disposed}`：变更通知
   **沿父链向上传播**（根能看见整棵子树）；等待在**整个家族内共享唤醒源**
   （子等父提供的服务不会漏唤醒）。
-- `PluginScope`（新模块 `scope`）：一层 = 一个 `Ctx` 作用域 + 一个
-  `PluginRegistry`。`PluginScope::root(ctx)` 建根，`mount` / `mount_when_ready`
+- `ModuleScope`（新模块 `scope`）：一层 = 一个 `Ctx` 作用域 + 一个
+  `ModuleRegistry`。`ModuleScope::root(ctx)` 建根，`mount` / `mount_when_ready`
   / `unmount` / `shutdown` / `walk` / `children_of`。
-- `MountContext::nest()` / `MountContext::tree`：插件在自己的 `mount` 里建
-  **子作用域**并挂子插件。归属靠挂载期压栈记录（`mounting` 栈），不靠插件自报；
+- `MountContext::nest()` / `MountContext::tree`：模块在自己的 `mount` 里建
+  **子作用域**并挂子模块。归属靠挂载期压栈记录（`mounting` 栈），不靠模块自报；
   `unmount(父)` 会 `shutdown()` 它名下的子作用域（**递归**，子先于父）。
 - 无树把手的裸注册表：`nest()` 返回 `None`，挂载照常成功——树是**可选**能力。
 
 ### 修复
 
-- **`Plugin::unmount()` 此前从未被调用**：`PluginRegistry::unmount` 撤完
-  disposer 就返回，插件覆写的 `unmount`（"disposer 之外的清理"）成了死代码。
+- **`Module::unmount()` 此前从未被调用**：`ModuleRegistry::unmount` 撤完
+  disposer 就返回，模块覆写的 `unmount`（"disposer 之外的清理"）成了死代码。
   现在 disposer 撤完会调用它。顺带把 disposer 撤销顺序改成**逆序**（后注册的
   先撤），与嵌套资源直觉一致。
 - `Ctx::register` 的 disposer 此前直接改表、不广播：现在走
@@ -403,72 +407,72 @@ trait 不是对象安全的（AFIT 目前不支持 `dyn`）。`payload` 按值�
 
 ### 为什么不把 inject 类型化
 
-服务键的**存在性**是 `echo-context` 的概念；键背后的类型是宿主与插件的私事。
-框架若要求类型化，就得认识宿主的 trait（`echo-plugin` 零领域依赖的边界立刻破），
-或者要求插件之间互相 `use` 对方的类型（插件就不再可独立替换）。存在性校验已
+服务键的**存在性**是 `echo-context` 的概念；键背后的类型是宿主与模块的私事。
+框架若要求类型化，就得认识宿主的 trait（`echo-module` 零领域依赖的边界立刻破），
+或者要求模块之间互相 `use` 对方的类型（模块就不再可独立替换）。存在性校验已
 覆盖真实故障：注册顺序错、服务忘了注册、服务被提前注销。
 
 ## [0.5.0] — 2026-11-01
 
-补上 in-process 插件缺失的两块机制：**配置下发**与**服务键依赖校验**。
-此前 `plugins.toml` 的 `[plugin.config]` 只能到子进程插件的 `Hello.config`，
-内置插件的 `mount` 拿不到自己的配置；`Contribution::Service` 也只是一个
+补上 in-process 模块缺失的两块机制：**配置下发**与**服务键依赖校验**。
+此前 `modules.toml` 的 `[module.config]` 只能到子进程模块的 `Hello.config`，
+内置模块的 `mount` 拿不到自己的配置；`Contribution::Service` 也只是一个
 "声明了没人读"的字段。
 
 ### 新增
 
 - `MountContext.config: serde_json::Value`（+ `with_config` / `config()` /
-  `config_str(key)`）：宿主按插件 id 注入该插件的配置，**缺省 `Null` 而非
-  `{}`**——插件要能区分「没配」与「配了空表」。框架不解析内容、不做 schema
-  校验，那是宿主与插件之间的契约。
-- `PluginRegistry::set_config` / `set_configs` / `config_for`：组合根在挂载前
-  登记配置；`mount()` 按 id 合并进传给该插件的 `MountContext`。运行期重新
+  `config_str(key)`）：宿主按模块 id 注入该模块的配置，**缺省 `Null` 而非
+  `{}`**——模块要能区分「没配」与「配了空表」。框架不解析内容、不做 schema
+  校验，那是宿主与模块之间的契约。
+- `ModuleRegistry::set_config` / `set_configs` / `config_for`：组合根在挂载前
+  登记配置；`mount()` 按 id 合并进传给该模块的 `MountContext`。运行期重新
   挂载（`set_enabled(true)` / `restart`）取**当时**登记的值。
-- `Plugin::required_services() -> Vec<String>`（默认空）+ `BuiltinPlugin::
-  with_required_services`：插件声明「挂我之前这些服务键必须在 `Ctx` 里」。
-  `PluginRegistry::mount` 在跑 mount 闭包**之前**逐个 `Ctx::contains` 校验，
-  缺失即 `PluginMountError::MissingService { key, available }`——
+- `Module::required_services() -> Vec<String>`（默认空）+ `BuiltinModule::
+  with_required_services`：模块声明「挂我之前这些服务键必须在 `Ctx` 里」。
+  `ModuleRegistry::mount` 在跑 mount 闭包**之前**逐个 `Ctx::contains` 校验，
+  缺失即 `ModuleMountError::MissingService { key, available }`——
   **mount 闭包根本不会执行**（依赖没就绪就不该产生副作用）。
   这与 dsh 的 `inject` 同义，只是以存在性校验的形式落地（框架不认识具体类型）。
-- `PluginDescriptor.required_services`（`#[serde(default)]`）：面板据此回答
-  「这个插件为什么不挂载」。
+- `ModuleDescriptor.required_services`（`#[serde(default)]`）：面板据此回答
+  「这个模块为什么不挂载」。
 
 ### 为什么 `required_services` 用 `Vec<String>` 而不是类型化
 
 服务键的**存在性**是 `echo-context` 的概念（字符串 + 是否有），而"这个键背后
-是什么类型"是宿主与插件之间的私事。框架若要求类型化，就得认识宿主的 trait
-（`echo-plugin` 零领域依赖的边界就破了）。存在性校验已经能挡住真实故障：
+是什么类型"是宿主与模块之间的私事。框架若要求类型化，就得认识宿主的 trait
+（`echo-module` 零领域依赖的边界就破了）。存在性校验已经能挡住真实故障：
 组合根把服务注册挪到挂载之后、或忘了注册——启动期立刻失败并列出可用服务，
-而不是"插件挂载成功、运行期才发现依赖不存在"。
+而不是"模块挂载成功、运行期才发现依赖不存在"。
 
 [0.6.0]: #060--2026-11-01
 [0.5.0]: #050--2026-11-01
 
 ## [0.4.1] — 2026-10-19
 
-新增**跨语言插件示例与测试**——把「协议即 ABI」从说法变成可运行的事实。
+新增**跨语言模块示例与测试**——把「协议即 ABI」从说法变成可运行的事实。
 
 ### 新增
 
-- `examples/minimal-plugin-py/plugin.py`：纯 Python 插件，约 150 行，**零 Rust
+- `examples/minimal-module-py/module.py`：纯 Python 模块，约 150 行，**零 Rust
   依赖**。手写帧（4 字节小端长度前缀 + JSON），不用 SDK。文件头把线上协议完整
   写了一遍——帧格式、握手顺序（`Hello` → `Welcome` → `Register` → `Ready`）、
   消息形状、生命周期（`drain` / `dispose` / `cancel` / stdin EOF），可直接当别的
   语言的参考实现。
-- `crates/echo-plugin-host/tests/cross_language.rs`（3 项）：
-  - `python_plugin_speaks_the_protocol`：真 spawn Python 进程，验握手 + 贡献
+- `crates/echo-module-host/tests/cross_language.rs`（3 项）：
+  - `python_module_speaks_the_protocol`：真 spawn Python 进程，验握手 + 贡献
     解析 + 调用往返 + 未知贡献返回结构化错误 + drain 优雅退出
-  - `python_plugin_rejects_mismatched_protocol_version`：协议版本 999 必须被
+  - `python_module_rejects_mismatched_protocol_version`：协议版本 999 必须被
     拒绝（fail-closed），不是"先连上再说"
-  - `python_plugin_frames_parse_with_the_rust_types`：直接对帧做断言（不经
+  - `python_module_frames_parse_with_the_rust_types`：直接对帧做断言（不经
     supervisor），便于区分"协议问题"与"监督逻辑问题"
   - 环境无 `python3` 时**跳过而非失败**
 - CI 新增跨语言步骤。
 
 ### 为什么值得一条测试
 
-「不锁定语言」是这套框架相对 Node 生态插件框架的实质优势，但写在文档里只是说法。
-Python 插件真发一遍帧，才算证据——顺带把 M4 修掉的 `ServiceContribution` 重复键
+「不锁定语言」是这套框架相对 Node 生态模块框架的实质优势，但写在文档里只是说法。
+Python 模块真发一遍帧，才算证据——顺带把 M4 修掉的 `ServiceContribution` 重复键
 bug 也纳入了回归：把 `service_kind` 改回 `kind`，两条测试立刻 FAILED（已实测）。
 
 ## [0.4.0] — 2026-10-19
@@ -483,7 +487,7 @@ bug 也纳入了回归：把 `service_kind` 改回 `kind`，两条测试立刻 F
   重复键 `{"kind":"service","key":"g","kind":"g","version":1}`，宿主
   `serde_json` 报 `duplicate field`，整帧解析失败。
   - 为什么长期未发现：inproc 轨类型直连、零序列化，冲突不出现；当时唯一声明
-    `Service` 贡献的插件跑在 inproc 上。M4 的最小示例（唯一同时用「Service
+    `Service` 贡献的模块跑在 inproc 上。M4 的最小示例（唯一同时用「Service
     贡献 + stdio 轨」的组合）把它撞出来了。
   - 修法：wire 字段改名 `service_kind`（此前这种帧**根本解析不了**，零兼容成本）。
   - 防复发：新增 `every_contribution_variant_roundtrips_through_json`
@@ -492,11 +496,11 @@ bug 也纳入了回归：把 `service_kind` 改回 `kind`，两条测试立刻 F
 
 ### 新增
 
-- `examples/minimal-host`（130 行）+ `examples/minimal-plugin`（70 行）：
-  只用框架六件套的最小宿主与插件，**不引入** `echo-defs` / `echo-agent`。
+- `examples/minimal-host`（130 行）+ `examples/minimal-module`（70 行）：
+  只用框架六件套的最小宿主与模块，**不引入** `echo-defs` / `echo-agent`。
   宿主内部带 `assert!`，跑通即证明框架可独立使用；CI 里作为独立步骤执行。
-- `docs/getting-started.md`：第三方快速上手（写插件 / 拉起来 / 同进程轨 /
-  崩溃隔离 / 跨语言插件 / 版本策略）。
+- `docs/getting-started.md`：第三方快速上手（写模块 / 拉起来 / 同进程轨 /
+  崩溃隔离 / 跨语言模块 / 版本策略）。
 - `examples/README.md`：预期输出与「每个示例在证明什么」。
 
 ## [0.3.0] — 2026-10-19
@@ -512,7 +516,7 @@ bug 也纳入了回归：把 `service_kind` 改回 `kind`，两条测试立刻 F
 ### 为什么搬走
 
 1. **框架自己一处不用**——六个 crate 里零调用；8 处使用者全在应用层
-   （`agent_manager` / `plugin_host` / `global_policy` / `shell_manager` /
+   （`agent_manager` / `module_host` / `global_policy` / `shell_manager` /
    搜索客户端 / 联邦导入）。
 2. **它破坏复用前提**。「同一进程能起两套宿主」要求框架不在进程级藏状态；
    有这张表的话，第二套宿主会读到第一套的句柄。
@@ -528,7 +532,7 @@ bug 也纳入了回归：把 `service_kind` 改回 `kind`，两条测试立刻 F
 
 ## [0.2.0] — 2026-10-19
 
-迁入宿主侧四件套，**六件套齐备**——本仓现在可以独立跑通端到端插件链路。
+迁入宿主侧四件套，**六件套齐备**——本仓现在可以独立跑通端到端模块链路。
 从 EchoAgentCore 逐字节搬迁，代码与行为零改动。
 
 ### 新增
@@ -536,11 +540,11 @@ bug 也纳入了回归：把 `service_kind` 改回 `kind`，两条测试立刻 F
 - `echo-context` 0.1.0：`Ctx` 服务定位、强类型 `ServiceKey`、四模式 `EventBus`
   （Observe / Waterfall / Parallel / Serial）、可逆注册 `Disposer`、
   `ScopedRegistry`
-- `echo-plugin` 0.1.0：manifest + 生命周期 + registry。M2 已去业务化
+- `echo-module` 0.1.0：manifest + 生命周期 + registry。M2 已去业务化
   ——`kind` 是开放标签（`String`），`MountContext` 只剩 `ctx`
-- `echo-plugin-loader` 0.1.0：profile → bundle → patch 三层配置合成 + provenance
+- `echo-module-loader` 0.1.0：profile → bundle → patch 三层配置合成 + provenance
   + 依赖排序
-- `echo-plugin-host` 0.1.0：`Transport`（inproc / stdio）+ `PluginSupervisor`
+- `echo-module-host` 0.1.0：`Transport`（inproc / stdio）+ `ModuleSupervisor`
   （握手 / 调用 / 取消 / 排空 / 崩溃重启 / 资源限额）+ conformance 套件
   （inproc 14 + stdio 10 + upgrade 10 + bootstrap 9 + host_call 3）
 - `framework-gates`：新增 `domain_agnostic` 门禁（4 项）
@@ -553,7 +557,7 @@ bug 也纳入了回归：把 `service_kind` 改回 `kind`，两条测试立刻 F
 
 ### 已知边界
 
-- 协议贡献类型仍带领域分类（`Contribution::Tool` / `Skill` / `PluginInstance`，
+- 协议贡献类型仍带领域分类（`Contribution::Tool` / `Skill` / `ModuleInstance`，
   wire tag 保留历史名 `adapter`），去业务化排在 M5，需 2 个以上真实外部使用者
   才启动
 - `echo-context::kernel` 的搬迁（见上）
@@ -581,24 +585,24 @@ bug 也纳入了回归：把 `service_kind` 改回 `kind`，两条测试立刻 F
 
 ## [0.1.0] — 2026-10-19
 
-首个版本，从 EchoAgentCore 迁出（`source/plugin/echo-plugin-{api,sdk}`），
+首个版本，从 EchoAgentCore 迁出（`source/module/echo-module-{api,sdk}`），
 代码与行为**零改动**——本次发布只是让它们能被外部独立编译。
 
 ### 包含
 
-- `echo-plugin-api` 0.1.0：冻结协议。协议名 `echo-plugin`，`PROTOCOL_VERSION = 1`。
+- `echo-module-api` 0.1.0：冻结协议。协议名 `echo-module`，`PROTOCOL_VERSION = 1`。
   - 消息：`Hello` / `Welcome` / `Register` / `Ready` / `Invoke` / `InvokeResult` /
     `Cancel` / `Drain` / `Dispose` / `Emit` / `Event` / `Log` / `HostCall` /
     `HostCallResult` / `Failed`
-  - 贡献类型：`Tool` / `Skill` / `Service` / `Events` / `PluginInstance`
-    （wire tag 为 `adapter`，为兼容已部署插件而保留）
+  - 贡献类型：`Tool` / `Skill` / `Service` / `Events` / `ModuleInstance`
+    （wire tag 为 `adapter`，为兼容已部署模块而保留）
   - 能力位：`tools` / `skills` / `services` / `events` / `cancel` / `host_call` / `adapter`
-- `echo-plugin-sdk` 0.1.0：插件侧运行时（`serve_stdio` / `serve_io` /
-  `InstancePlugin` / `InstanceHandler` / `HostClient`），re-export `echo_plugin_api`。
+- `echo-module-sdk` 0.1.0：模块侧运行时（`serve_stdio` / `serve_io` /
+  `InstanceModule` / `InstanceHandler` / `HostClient`），re-export `echo_module_api`。
 
 ### 已知边界
 
-- 宿主侧（`echo-plugin-host` / `echo-plugin` / `echo-plugin-loader`）与 `echo-context`
+- 宿主侧（`echo-module-host` / `echo-module` / `echo-module-loader`）与 `echo-context`
   **尚未迁入**，计划 M3。在此之前本仓不能单独跑通端到端示例。
-- `Contribution` 枚举仍包含应用领域分类（`Tool` / `Skill` / `PluginInstance`）。
+- `Contribution` 枚举仍包含应用领域分类（`Tool` / `Skill` / `ModuleInstance`）。
   机制本身与领域无关，但协议表面承认了这些分类；去业务化留待 M5 评估。

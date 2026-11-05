@@ -149,7 +149,7 @@ dependencies = [
 
 [[package]]
 name = "echo-context"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "dashmap",
  "proptest",
@@ -158,8 +158,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "echo-plugin"
-version = "0.14.0"
+name = "echo-module"
+version = "0.15.0"
 dependencies = [
  "echo-context",
  "serde",
@@ -171,21 +171,21 @@ dependencies = [
 ]
 
 [[package]]
-name = "echo-plugin-api"
-version = "0.14.0"
+name = "echo-module-api"
+version = "0.15.0"
 dependencies = [
  "serde",
  "serde_json",
 ]
 
 [[package]]
-name = "echo-plugin-host"
-version = "0.14.0"
+name = "echo-module-host"
+version = "0.15.0"
 dependencies = [
  "async-trait",
  "base64",
- "echo-plugin-api",
- "echo-plugin-loader",
+ "echo-module-api",
+ "echo-module-loader",
  "libc",
  "serde_json",
  "thiserror",
@@ -194,8 +194,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "echo-plugin-loader"
-version = "0.14.0"
+name = "echo-module-loader"
+version = "0.15.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -204,11 +204,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "echo-plugin-sdk"
-version = "0.14.0"
+name = "echo-module-sdk"
+version = "0.15.0"
 dependencies = [
  "async-trait",
- "echo-plugin-api",
+ "echo-module-api",
  "serde",
  "serde_json",
  "thiserror",
@@ -246,7 +246,7 @@ checksum = "3f9eec918d3f24069decb9af1554cad7c880e2da24a9afd88aca000531ab82c1"
 
 [[package]]
 name = "framework-gates"
-version = "0.14.0"
+version = "0.15.0"
 
 [[package]]
 name = "getrandom"
@@ -338,20 +338,20 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "minimal-host"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "echo-context",
- "echo-plugin",
- "echo-plugin-host",
+ "echo-module",
+ "echo-module-host",
  "serde_json",
  "tokio",
 ]
 
 [[package]]
-name = "minimal-plugin"
-version = "0.14.0"
+name = "minimal-module"
+version = "0.15.0"
 dependencies = [
- "echo-plugin-sdk",
+ "echo-module-sdk",
  "serde_json",
  "tokio",
  "tracing",

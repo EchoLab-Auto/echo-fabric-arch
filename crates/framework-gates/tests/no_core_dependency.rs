@@ -10,14 +10,14 @@
 //! 那边的保护随迁移消失，必须由本仓补上等价断言（见 EchoAgentCore 的
 //! `document/design/echo-fabric-arch-extraction.md` §4.2）。
 //!
-//! 白名单只有一条：`echo-plugin-sdk` → `echo-plugin-api`（同仓内上下游）。
+//! 白名单只有一条：`echo-module-sdk` → `echo-module-api`（同仓内上下游）。
 
 use std::path::{Path, PathBuf};
 
 /// 本仓内允许的 echo-* 依赖：`(crate 目录名, 允许的 echo-* 依赖)`。
 const INTERNAL_EDGES: &[(&str, &[&str])] = &[
-    ("echo-plugin-api", &[]),
-    ("echo-plugin-sdk", &["echo-plugin-api"]),
+    ("echo-module-api", &[]),
+    ("echo-module-sdk", &["echo-module-api"]),
 ];
 
 fn repo_root() -> PathBuf {
@@ -87,19 +87,19 @@ fn framework_crates_only_depend_on_each_other_as_declared() {
 fn edge_allowlist_actually_restricts() {
     let sdk_allowed = INTERNAL_EDGES
         .iter()
-        .find(|(name, _)| *name == "echo-plugin-sdk")
+        .find(|(name, _)| *name == "echo-module-sdk")
         .map(|(_, allowed)| *allowed)
-        .expect("echo-plugin-sdk 必须在 INTERNAL_EDGES 里");
+        .expect("echo-module-sdk 必须在 INTERNAL_EDGES 里");
     assert!(
-        sdk_allowed.contains(&"echo-plugin-api"),
+        sdk_allowed.contains(&"echo-module-api"),
         "sdk 依赖 api 是合法边"
     );
 
     let api_allowed = INTERNAL_EDGES
         .iter()
-        .find(|(name, _)| *name == "echo-plugin-api")
+        .find(|(name, _)| *name == "echo-module-api")
         .map(|(_, allowed)| *allowed)
-        .expect("echo-plugin-api 必须在 INTERNAL_EDGES 里");
+        .expect("echo-module-api 必须在 INTERNAL_EDGES 里");
     assert!(
         api_allowed.is_empty(),
         "api 是契约层叶子，不允许任何 echo-* 依赖"

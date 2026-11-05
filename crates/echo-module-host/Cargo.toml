@@ -1,0 +1,29 @@
+[package]
+name = "echo-module-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Module host for EchoAgentCore — transports (inproc/stdio), supervisor lifecycle, conformance suite"
+
+[dependencies]
+echo-module-api = { workspace = true }
+echo-module-loader = { workspace = true }
+async-trait = { workspace = true }
+base64 = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+# 测试对端模块（stdio 运输层 conformance 用；integration test 经
+# `env!("CARGO_BIN_EXE_echo-module-test-peer")` 定位）。
+[[bin]]
+name = "echo-module-test-peer"
+path = "src/bin/echo-module-test-peer.rs"
+
+[target.'cfg(unix)'.dependencies]
+# 子进程资源限额（setrlimit）：CPU / 地址空间 / 文件大小 / 打开文件数。
+# 只在 Unix 生效——限额本身是 POSIX 概念，其它平台跳过（见 `stdio::ResourceLimits`）。
+libc = { workspace = true }

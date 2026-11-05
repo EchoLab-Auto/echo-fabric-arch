@@ -1,0 +1,53 @@
+//! # echo-module-api — 模块协议（冻结契约）
+//!
+//! P0 阶段产物（见 `document/design/decoupling-plan.md`）。本 crate 是宿主（kernel）
+//! 与模块之间的**唯一线上契约**：同一组消息覆盖全部运输层——
+//!
+//! - **inproc**：类型直连（零序列化，模块与宿主同进程编译）；
+//! - **subprocess**：4 字节 LE 长度前缀 + JSON（默认；编解码实现位于
+//!   `echo-module-host` 的 stdio 运输层，Phase 2），msgpack 留 feature；
+//! - dylib / wasm（实验/可选轨）：JSON 载荷。
+//!
+//! ## 兼容性规则（对齐 `echo-federation::FedFrame` 既有惯例）
+//!
+//! - adjacently-tagged enum（`{"type": …, "payload": …}`）；变体名与字段名是
+//!   线上契约，**只增不改**。注：无载荷变体（`Ready` / `Dispose`）序列化为
+//!   仅含 `"type"` 的单键对象（无 `payload` 键），已由契约测试固化；
+//! - 新增字段一律 `#[serde(default)]`（旧端点可解码新帧、新端点可解码旧帧）；
+//! - Hello/Welcome 握手时比对 [`PROTOCOL_NAME`] 与 [`PROTOCOL_VERSION`]：
+//!   主版本不一致拒绝连接；
+//! - [`HostToModule::Dispose`] 与崩溃在运输层同形（连接关闭）——宿主在主动
+//!   Dispose 前必须**先停用重启**（supervisor 侧语义），否则会被误判为崩溃
+//!   触发重启；当前 supervisor 以 Drain 收尾、不发送 Dispose；
+//! - 协议变更必须过 conformance 测试套件（`echo-module-host/tests/conformance.rs`）
+//!   并按需 bump `PROTOCOL_VERSION`。
+
+pub mod contribution;
+pub mod protocol;
+
+pub use contribution::{
+    CommandContribution, Contribution, EventContribution, ServiceContribution,
+    TextBlockContribution,
+};
+pub use protocol::{
+    compatible, Cancel, Drain, Emit, EventNotification, Failure, Hello, HostCall, HostCallOutcome,
+    HostCallResult, HostToModule, Invoke, InvokeContext, InvokeOutcome, InvokeResult, LogLevel,
+    LogRecord, ModuleToHost, Register, Welcome, PROTOCOL_NAME, PROTOCOL_VERSION,
+};
+
+/// 能力 / feature 名单常量（`Welcome.capabilities` 用的稳定字符串）。
+///
+/// 双方都声明才可用；宿主与模块勿硬编码字面量。
+pub mod capabilities {
+    /// 模块提供以键注册的服务贡献。
+    pub const SERVICES: &str = "services";
+    /// 模块订阅宿主事件（`HostToModule::Event` 才会送达）。
+    pub const EVENTS: &str = "events";
+    /// 模块支持取消语义（Cancel 送达 + `Error{code:"cancelled"}` 回发）。
+    pub const CANCEL: &str = "cancel";
+    /// 模块支持宿主服务回呼（`HostCall` / `HostCallResult`）。
+    pub const HOST_CALL: &str = "host_call";
+}
+
+#[cfg(test)]
+mod tests;

@@ -20,7 +20,7 @@
 //!   a scoped entry replaces its same-named global twin for that scope alone.
 //! - **父子作用域**：[`Ctx::child`] 造一个父链子作用域（子遮蔽父、父对其可见），
 //!   变更通知 [`Ctx::on_change`] 沿父链向上传播，等待 [`Ctx::wait_for_keys`]
-//!   在整个家族内共享唤醒源——这是插件树（父插件宿主化子插件）的底座。
+//!   在整个家族内共享唤醒源——这是模块树（父模块宿主化子模块）的底座。
 //!
 //! # 全局态不在此（v0.3.0）
 //!

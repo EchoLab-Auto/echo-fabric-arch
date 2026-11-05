@@ -13,7 +13,7 @@ use crate::ctx::Disposer;
 /// interprets them (a host typically keys each scope by its own runtime
 /// instance identity).
 ///
-/// Registration returns a [`Disposer`]; unloading a scope's plugin unwinds
+/// Registration returns a [`Disposer`]; unloading a scope's module unwinds
 /// all its scoped registrations.
 pub struct ScopedRegistry<T: Send + Sync + 'static> {
     global: RwLock<HashMap<String, Arc<T>>>,

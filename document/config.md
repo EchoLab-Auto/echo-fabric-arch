@@ -6,19 +6,19 @@ group: 概念
 
 # 配置组合
 
-`echo-plugin-loader` 解决一件事：**一份插件清单由多个文件拼出来，且每个条目
+`echo-module-loader` 解决一件事：**一份模块清单由多个文件拼出来，且每个条目
 都能回答"我是被哪个文件改成了现在这样"**。
 
 ## 四层合成
 
 ```
-profile（plugins.toml 本体）
+profile（modules.toml 本体）
   ↓ 依次应用
 bundles（[profile].bundles 列出的文件）
   ↓ 依次应用
 patches（[profile].patches 列出的文件）
   ↓ 最后应用
-inline（profile 文件自己的 [[plugin]] 行）
+inline（profile 文件自己的 [[module]] 行）
 ```
 
 **语义是"按 id 定位、整行替换"**（dsh 风格），不是字段级 merge。理由很实际：
@@ -31,7 +31,7 @@ inline（profile 文件自己的 [[plugin]] 行）
 ## 一个条目长什么样
 
 ```toml
-[[plugin]]
+[[module]]
 id    = "greeter"
 kind  = "stdio"        # builtin | stdio | dylib | wasm
 name  = "greeter"
@@ -39,9 +39,9 @@ command = "/usr/local/libexec/greeter"   # stdio 必填
 args  = ["--verbose"]
 enabled = true
 requires = ["logger"]  # 依赖排序：这些 id 必须先就绪
-[plugin.config]        # 原样透传给插件（Hello.config / MountContext.config）
+[module.config]        # 原样透传给模块（Hello.config / MountContext.config）
 lang = "zh"
-[plugin.limits]        # 只对 stdio 生效
+[module.limits]        # 只对 stdio 生效
 memory_mb = 512
 ```
 
@@ -79,4 +79,4 @@ kind = "stdio"
 | 改了 bundle 没生效 | 该 id 被后面的 patch 整行替换了——看 provenance |
 | `requires` 循环 | 依赖不能成环（哪怕逻辑上"互补"） |
 | 配置写了但不生效 | 条目 `enabled = false`，或者宿主没有对应 `EntryKind` 的运输层 |
-| 凭证写进 `[plugin.config]` | 配置会进清单接口与日志排查面——凭证请走环境变量或宿主自己的存储 |
+| 凭证写进 `[module.config]` | 配置会进清单接口与日志排查面——凭证请走环境变量或宿主自己的存储 |

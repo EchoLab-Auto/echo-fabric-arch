@@ -5,8 +5,8 @@
 //!
 //! ## 覆盖范围与已知残留
 //!
-//! **全部**框架 crate 都参与审计——包括曾经被排除的 `echo-plugin-api` /
-//! `echo-plugin-sdk`。被排除过的那段时间里，`echo-plugin-api` 长出了一整套
+//! **全部**框架 crate 都参与审计——包括曾经被排除的 `echo-module-api` /
+//! `echo-module-sdk`。被排除过的那段时间里，`echo-module-api` 长出了一整套
 //! QQ 聊天平台类型（`MessageTarget` / `ChannelType` / `IncomingMessage`），
 //! 而排查发现它们**零使用者**：EchoAgentCore 用自己的 `echo-defs::chat` 副本，
 //! 本仓内部只有一条测试在测它们的 serde 往返。已删除。
@@ -27,8 +27,8 @@
 //! 通用的 `Contribution::Custom`，而不是"留到以后再说"——因为那个"以后"不会
 //! 自己到来。
 //!
-//! 为什么用门禁而不是评审：`MountContext.tools` / `PluginKind::{Tool,Skill}` /
-//! `PluginToolSink` 这类东西**当初都是善意加的**（"给外部插件预留的接缝"），
+//! 为什么用门禁而不是评审：`MountContext.tools` / `ModuleKind::{Tool,Skill}` /
+//! `ModuleToolSink` 这类东西**当初都是善意加的**（"给外部模块预留的接缝"），
 //! 但它们让框架认识了它不该认识的词。人读文档会漏，测试不会。
 
 use std::path::{Path, PathBuf};
@@ -36,11 +36,11 @@ use std::path::{Path, PathBuf};
 /// 参与领域词审计的框架 crate（相对本仓 `crates/`）。
 const AUDITED_CRATES: &[&str] = &[
     "echo-context",
-    "echo-plugin",
-    "echo-plugin-loader",
-    "echo-plugin-host",
-    "echo-plugin-api",
-    "echo-plugin-sdk",
+    "echo-module",
+    "echo-module-loader",
+    "echo-module-host",
+    "echo-module-api",
+    "echo-module-sdk",
 ];
 
 /// 已知的领域残留：`(crate, 文件相对 crate 的路径, 词)`。
@@ -54,7 +54,7 @@ const AUDITED_CRATES: &[&str] = &[
 /// 配套的 `known_residue_entries_must_still_be_needed` 会在某条不再触发违规时
 /// 报错，逼着删掉过时条目——否则白名单只会越积越厚。
 const KNOWN_DOMAIN_RESIDUE: &[(&str, &str, &str)] = &[
-    // 空表：全部框架 crate（含 echo-plugin-api / echo-plugin-sdk）的生产代码
+    // 空表：全部框架 crate（含 echo-module-api / echo-module-sdk）的生产代码
     // 已不含任何领域词。协议的自定义分类走 `Contribution::Custom`，词汇由宿主
     // 自己定义——框架一个都不认识。
     //
@@ -73,7 +73,7 @@ const FORBIDDEN_DEPS: &[&str] = &["echo-defs", "echo-agent", "echo-protocol", "e
 
 /// 框架层禁用的应用领域词汇。
 ///
-/// 选词标准：**只有宿主应用才有意义的词**。刻意不含 `plugin` / `manifest` /
+/// 选词标准：**只有宿主应用才有意义的词**。刻意不含 `module` / `manifest` /
 /// `service` / `event` / `transport` 这类框架自身词汇——框架当然可以有这些。
 const FORBIDDEN_WORDS: &[&str] = &[
     "session",
@@ -100,7 +100,7 @@ fn repo_root() -> PathBuf {
 
 /// 递归收集 `dir` 下的 `.rs` 文件（跳过 `bin/`）。
 ///
-/// `src/bin/` 里只有 conformance 对端夹具（`echo-plugin-test-peer`），它的职责
+/// `src/bin/` 里只有 conformance 对端夹具（`echo-module-test-peer`），它的职责
 /// 就是构造协议的各种贡献——包括协议目前仍带的领域分类（M5 待议）。它不参与
 /// 对外 API 表面，因此不算"框架认识了领域词汇"。
 fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -205,9 +205,7 @@ fn known_residue_entries_must_still_be_needed() {
             .lines()
             .any(|line| contains_word(line, word));
         if !still_there {
-            stale.push(format!(
-                "{crate_name}/{rel_path}: 已不再出现「{word}」"
-            ));
+            stale.push(format!("{crate_name}/{rel_path}: 已不再出现「{word}」"));
         }
     }
 

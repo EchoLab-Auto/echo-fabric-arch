@@ -20,7 +20,7 @@ type ErasedService = Box<dyn Any + Send + Sync>;
 /// `ctx.<key>` service lookup.
 ///
 /// Registration returns a [`Disposer`]; disposing removes the service, so
-/// plugin unload unwinds its contributions.
+/// module unload unwinds its contributions.
 ///
 /// [`Ctx::register`] / [`Ctx::resolve`] use plain string keys; the
 /// strongly-typed [`ServiceKey`] API on the same table — [`Ctx::provide`],
@@ -32,8 +32,8 @@ type ErasedService = Box<dyn Any + Send + Sync>;
 ///
 /// [`Ctx::child`] 建一个**子作用域**：父链上的服务对子可见，子自己的注册
 /// 对父**不可见**（遮蔽 = 子作用域内的同名覆盖，随子作用域销毁而恢复）。
-/// 插件树因此可以「父插件装根服务、子插件在子作用域里装自己那份」，
-/// 而互不污染——这正是 dsh 里 `ctx.plugin()` 嵌套所依赖的隔离语义。
+/// 模块树因此可以「父模块装根服务、子模块在子作用域里装自己那份」，
+/// 而互不污染——这正是 dsh 里 `ctx.module()` 嵌套所依赖的隔离语义。
 ///
 /// 变更通知沿父链**向上**传播（根能看见整棵树的注册/注销），等待则在
 /// **整个家族**内共享一个唤醒源（子等父提供的服务不会漏唤醒）。
@@ -61,7 +61,7 @@ type ChangeListener = Arc<dyn Fn(Change) + Send + Sync>;
 /// 一次服务表变更（[`Ctx::on_change`] 的载荷）。
 ///
 /// 框架只用它做「依赖变更 → 重新核对」：注入声明里要求的键消失时，宿主
-/// 可以把依赖它的插件卸下并标成待挂载。**不含取值**——订阅者若需要值，
+/// 可以把依赖它的模块卸下并标成待挂载。**不含取值**——订阅者若需要值，
 /// 自己去 [`Ctx::resolve`]，这样通知不会把服务对象抄一份到队列里。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Change {
@@ -168,8 +168,8 @@ impl Ctx {
 
     /// 建一个**子作用域**（父链 + 共享唤醒源 + 独立订阅者表）。
     ///
-    /// 子作用域的服务对父不可见；父的对其可见。用于插件树：父插件在根
-    /// 作用域装公共服务，子插件在自己的子作用域里装私有实现。
+    /// 子作用域的服务对父不可见；父的对其可见。用于模块树：父模块在根
+    /// 作用域装公共服务，子模块在自己的子作用域里装私有实现。
     pub fn child(self: &Arc<Self>) -> Arc<Ctx> {
         Arc::new(Ctx {
             services: RwLock::new(HashMap::new()),
@@ -219,7 +219,7 @@ impl Ctx {
     ///
     /// 命中立即返回；超时返回 [`ServiceError::Missing`]，`key` = 第一个仍
     /// 缺失的键，`available` = 当前可见的全部键。这是「声明式 inject 的
-    /// 就绪等待」的底座：插件声明要什么，宿主拿它等，不用手编启动顺序。
+    /// 就绪等待」的底座：模块声明要什么，宿主拿它等，不用手编启动顺序。
     ///
     /// 与 [`service_or_wait`](Self::service_or_wait) 同款防丢唤醒：先把
     /// `Notified` 注册进等待表再复查一遍表。
