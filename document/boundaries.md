@@ -38,6 +38,52 @@ v0.3 删除。
 原因很具体：框架导出全局态，就等于宣称"一个进程只能有一套宿主"——而那正好
 破坏了"这框架能被任何 Rust 应用使用"这个复用前提。
 
+## 二点五、领域残留的实况（2026-11 审计）
+
+`document/crates.md` 说 `echo-plugin-api` 的协议表面"尚未收敛"。审计把这个
+模糊说法落成了数字，结论比预期更明确。
+
+### 实测：领域分类**零真实使用者**
+
+| 分类 | 在本仓 | 在 EchoAgentCore | 真实生产者/消费者 |
+|---|---|---|---|
+| `Tool` | 仅 SDK 测试 + conformance 夹具 | **无** | 0 |
+| `Skill` | 仅 SDK 测试 | **无** | 0 |
+| `PluginInstance` | 仅 SDK 的 `InstancePlugin` trait | **无** | 0 |
+| `MessageTarget` / `ChannelType` / `IncomingMessage` | 仅一条 serde 往返测试 | **无**（用自己的 `echo-defs::chat` 副本） | 0 |
+
+关键事实：**EchoAgentCore 已经不依赖本仓**——它的 `Cargo.toml` 用自己仓库内的
+`source/context/echo-context` 副本，跟 `echo-fabric-arch` 没有任何依赖关系。
+所以"等 2 个以上真实外部使用者再动"这个门槛，前提已经不成立了：不是"还没人
+用"，是"催生它的那个宿主也不用"。
+
+### 因此做了什么
+
+1. **删掉** `MessageTarget` / `ChannelType` / `IncomingMessage`（63 行）。它们是
+   从聊天平台带过来的完整数据结构，不是"标签"——但没有一行代码在生产路径上用它。
+2. **门禁不再排除** `echo-plugin-api` / `echo-plugin-sdk`，改为**白名单**：
+   已存在的残留逐条列出（`KNOWN_DOMAIN_RESIDUE`），新增的会红。
+3. 加一条**防腐烂**测试：白名单里的条目一旦不再触发违规就报错，逼着同步删除。
+
+排除整个 crate 与白名单的差别很实际：
+
+| 做法 | 新增领域词 | 删掉残留后 |
+|---|---|---|
+| 排除 crate | 静默通过 | 无人知道白名单该更新 |
+| 白名单 | **测试红** | **测试红，要求删条目** |
+
+### `Tool` / `Skill` / `PluginInstance` 为什么还在
+
+不是"有人用"，是**线上协议已发布**：删变体会破坏"旧插件 + 新宿主"的解码
+（`Contribution` 是内标签枚举，未知 tag 直接反序列化失败）。要删得先给协议加
+向前兼容的收口（例如把未知变体收进 `Unknown(Value)`），那是独立的兼容窗口，
+不是顺手能做的事。
+
+**要不要删的判断依据**：如果未来确实没有宿主需要这三个分类，正确做法不是留着
+它们"备用"，而是引入 `Contribution::Custom { kind, payload }` 让领域宿主自带
+分类——框架只搬 `kind` 字符串与 `payload`，不认识具体词汇。这正是本文 §一里那个 `PluginToolSink` 的教训：
+**给未来的预留，几乎总是错的**。
+
 ## 三、名字 + 存在性，而不是类型
 
 四处都是名字：服务键、插件 id、事件名、作用域父链。框架只校验**存在性**，
@@ -83,6 +129,7 @@ trait）——适配层可以认识业务，框架不行。
 | `dylib` 轨 | 未实现（Rust 无稳定 ABI；若做优先评估 `stabby`） |
 | `wasm` 轨 | 未实现（沙箱需求明确后再评估 wasmtime / extism） |
 | 声明式注入的类型化 | 不做（见 §三） |
+| 协议里的领域分类（`Tool`/`Skill`/`PluginInstance`） | 白名单登记中（见 §二点五）；零真实使用者，删除待兼容窗口 |
 | 就绪等待 vs 立即失败 | 两种都有：`mount` 立即校验，`mount_when_ready` 等待 |
 | 状态迁移协议（`export_state` / `import_state`） | 未实现（可选） |
 | 多插件共享预算 | 未实现（`rlimit` 管单个插件失控；cgroup 级共享未做，收益/成本不划算） |

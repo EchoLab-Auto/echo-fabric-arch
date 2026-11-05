@@ -45,11 +45,33 @@ pub enum Contribution {
     Text(TextBlockContribution),
 }
 
+impl Contribution {
+    /// `Invoke` 的寻址目标；`None` = 这条贡献不是"被调用的"。
+    ///
+    /// 三种寻址形态：按 `name`（两处）、按 `key`（服务）、按实例名。哪些参与
+    /// 寻址是**协议的知识**——放在变体定义旁边，SDK 与宿主都不必各自 match
+    /// 一遍具体变体（那会让它们也被迫认识 `Tool` / `Skill` 这些词）。
+    pub fn target_name(&self) -> Option<&str> {
+        match self {
+            Contribution::Tool(tool) => Some(&tool.name),
+            Contribution::Skill(skill) => Some(&skill.name),
+            Contribution::Service(service) => Some(&service.key),
+            Contribution::Events(_) => None,
+            // 插件实例的寻址名 = 实例名（宿主按 `Invoke("<name>:<op>")` 寻址）。
+            Contribution::PluginInstance(instance) => Some(&instance.name),
+            // 命令处理：宿主按 `Invoke("<command>")` 下发。
+            Contribution::Command(command) => Some(&command.name),
+            // 文本块是"宿主来取"而不是"宿主来调"（拉模式），不参与寻址。
+            Contribution::Text(_) => None,
+        }
+    }
+}
+
 fn default_category() -> String {
     "plugin".to_string()
 }
 
-/// 面向模型的工具贡献（schema 与 `echo-defs::tool::ToolDefinition` 同口径）。
+/// 工具贡献（遗留领域分类；参数用 JSON Schema 描述）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolContribution {
     pub name: String,
@@ -63,7 +85,7 @@ pub struct ToolContribution {
     /// 工具自声明超时上限（秒）；宿主守卫取其与配置 base 的较大者 + 宽限。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_hint_secs: Option<u64>,
-    /// 所属包 id（面板按包批量勾选用；如 `echo-agent.tools.builtin`）。
+    /// 所属包 id（宿主按包批量勾选用；如 `vendor.suite.feature`）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub package: Option<String>,
     /// 成功调用是否即产生平台可见输出（宿主据此抑制「临时等待回复」）。
@@ -202,68 +224,4 @@ pub struct InstanceCapabilities {
     /// 登录管理（`login_status` / `login_qrcode` 等）。
     #[serde(default)]
     pub login: bool,
-}
-
-// ── 词汇结构（与 echo-defs 词汇同构；保持本 crate 零 echo-* 依赖）─────────
-
-/// 插件实例的目标（出站寻址）。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MessageTarget {
-    /// 通道类型：`"dm"`（私聊）/ `{"type":"group","group_id":"…"}`（群聊）。
-    pub channel: ChannelType,
-    /// 目标用户 id（私聊回复 / @ 提及；字符串形态，平台号码语义归插件）。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub user_id: Option<String>,
-}
-
-/// 通道类型（与 `echo_defs::chat::ChannelType` 同构）。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum ChannelType {
-    /// 私聊。
-    Dm,
-    /// 群聊。
-    Group {
-        /// 群 / 频道 id（字符串形态）。
-        group_id: String,
-    },
-}
-
-/// 入站消息（`submit_input` 载荷；与 `echo_defs::chat::IncomingMessage`
-/// 同构）。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct IncomingMessage {
-    /// 插件实例名（= 归属维度；旧线字段名 `adapter` 仍接受，兼容已部署插件）。
-    #[serde(alias = "adapter")]
-    pub instance: String,
-    /// 平台标识（如 `"qq"`）。
-    pub platform: String,
-    /// 发送者 id（字符串形态）。
-    pub user_id: String,
-    /// 发送者显示名。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub user_name: Option<String>,
-    /// 通道。
-    pub channel: ChannelType,
-    /// 群显示名（群聊场景）。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub group_name: Option<String>,
-    /// 纯文本内容。
-    #[serde(default)]
-    pub content: String,
-    /// 平台时间戳（Unix 秒）。
-    #[serde(default)]
-    pub timestamp: i64,
-    /// 是否 @ 到本账号。
-    #[serde(default)]
-    pub at_me: bool,
-    /// 平台自有元数据（透传）。
-    #[serde(default, skip_serializing_if = "Value::is_null")]
-    pub metadata: Value,
-    /// 多模态媒体（图片 URL / `data:` URI / `/media/<id>` 引用）。
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub images: Vec<String>,
-    /// 已落盘文件附件。
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub files: Vec<Value>,
 }

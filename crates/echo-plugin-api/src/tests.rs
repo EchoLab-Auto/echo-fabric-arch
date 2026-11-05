@@ -223,36 +223,10 @@ fn instance_contribution_roundtrip_and_capabilities() {
     let caps: InstanceCapabilities = serde_json::from_value(json!({})).expect("defaults");
     assert!(!caps.send_text && !caps.gating && !caps.login);
 
-    // 词汇结构：通道与消息线格式。
-    let msg = IncomingMessage {
-        instance: "qq".into(),
-        platform: "qq".into(),
-        user_id: "123".into(),
-        user_name: Some("Alice".into()),
-        channel: ChannelType::Group {
-            group_id: "456".into(),
-        },
-        group_name: Some("开发群".into()),
-        content: "hello".into(),
-        timestamp: 1733814154,
-        at_me: true,
-        metadata: json!({}),
-        images: vec!["/media/ab12".into()],
-        files: vec![],
-    };
-    let text = serde_json::to_string(&msg).unwrap();
-    let back: IncomingMessage = serde_json::from_str(&text).unwrap();
-    assert_eq!(msg, back);
-    // 私聊通道的最小形态（字段省略容忍）。
-    let minimal: IncomingMessage = serde_json::from_value(json!({
-        "instance": "qq",
-        "platform": "qq",
-        "user_id": "123",
-        "channel": {"type": "dm"}
-    }))
-    .expect("minimal message tolerated");
-    assert_eq!(minimal.channel, ChannelType::Dm);
-    assert!(!minimal.at_me && minimal.images.is_empty());
+    // 注：`MessageTarget` / `ChannelType` / `IncomingMessage`（QQ 出站寻址与
+    // 入站消息）曾在 v0.13 之前定义于此 crate。那是从 EchoAgentCore 带过来的
+    // 聊天平台词汇，**零使用者**——EchoAgentCore 用自己的 `echo-defs::chat`
+    // 副本，本仓内部也只有这个测试在测它们的 serde 往返。已删除。
 }
 
 /// wire tag 冻结：`Contribution::PluginInstance` 在线上必须仍是 `adapter`。

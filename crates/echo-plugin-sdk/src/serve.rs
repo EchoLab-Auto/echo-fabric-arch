@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use echo_plugin_api::{
-    compatible, Contribution, Failure, HostCall, HostCallOutcome, HostToPlugin, InvokeOutcome,
+    compatible, Failure, HostCall, HostCallOutcome, HostToPlugin, InvokeOutcome,
     InvokeResult, PluginToHost, Register, Welcome, PROTOCOL_NAME, PROTOCOL_VERSION,
 };
 use serde_json::Value;
@@ -196,7 +196,7 @@ where
         HostToPlugin::Hello(hello) => hello,
         other => {
             let message = format!("first frame must be Hello, got {other:?}");
-            tracing::warn!(%message, "rejecting plugin session");
+            tracing::warn!(%message, "rejecting plugin connection");
             write_failure(&tx, "protocol_violation", &message);
             drop(tx);
             let _ = finish_writer(writer_task).await;
@@ -210,7 +210,7 @@ where
             "incompatible handshake: host protocol {:?} v{}, plugin supports {:?} v{}",
             hello.protocol, hello.version, PROTOCOL_NAME, PROTOCOL_VERSION
         );
-        tracing::warn!(%message, "rejecting plugin session");
+        tracing::warn!(%message, "rejecting plugin connection");
         write_failure(&tx, "incompatible_protocol", &message);
         drop(tx);
         let _ = finish_writer(writer_task).await;
@@ -238,7 +238,7 @@ where
     let registered: Arc<HashSet<String>> = Arc::new(
         contributions
             .iter()
-            .filter_map(contribution_target)
+            .filter_map(|c| c.target_name().map(str::to_string))
             .collect(),
     );
     enqueue(
@@ -382,23 +382,6 @@ pub(crate) fn split_instance_op(contribution: &str) -> Option<(String, String)> 
         return None;
     }
     Some((name.to_string(), op.to_string()))
-}
-
-/// 贡献名（`Invoke` 的寻址目标）：Tool / Skill 用 name，Service 用 key；
-/// 事件订阅不参与寻址。
-fn contribution_target(contribution: &Contribution) -> Option<String> {
-    match contribution {
-        Contribution::Tool(tool) => Some(tool.name.clone()),
-        Contribution::Skill(skill) => Some(skill.name.clone()),
-        Contribution::Service(service) => Some(service.key.clone()),
-        Contribution::Events(_) => None,
-        // 插件实例贡献的寻址名 = 实例名（宿主按 `Invoke("<name>:<op>")` 寻址）。
-        Contribution::PluginInstance(instance) => Some(instance.name.clone()),
-        // 命令处理贡献的寻址名 = 命令名（宿主按 `Invoke("<command>")` 下发）。
-        Contribution::Command(command) => Some(command.name.clone()),
-        // 提示词块是"宿主来取"而不是"宿主来调"（拉模式），不参与寻址。
-        Contribution::Text(_) => None,
-    }
 }
 
 /// 编码并入队一帧（不等待写出；顺序由单写者保证）。

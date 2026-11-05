@@ -39,6 +39,13 @@
   `HostCall` 回呼的完整说明（两种实现、身份、错误契约、三个坑、最小示例）。
   `examples/` 补上了回呼演示——此前框架最重要的机制之一**没有示例也没有文档**。
 
+### 移除
+
+- **`MessageTarget` / `ChannelType` / `IncomingMessage`**（63 行）：从聊天平台
+  带过来的完整数据结构。2026-11 审计确认**零使用者**——EchoAgentCore 用自己的
+  `echo-defs::chat` 副本，本仓内部只有一条 serde 往返测试。它们从未出现在任何
+  生产路径上，不属于"协议已发布需要兼容窗口"的情形。
+
 ### 变更（breaking）
 
 - `HostServiceRegistry::call` 由同步变异步，并新增 `caller` 参数：
@@ -46,6 +53,19 @@
   这是内部调用点（supervisor）才用的 API，宿主一般只调 `register_*`。
 - `mount` 失败现在会**写入 descriptor 的 `error`**（此前只出现在 `mount_all` 的
   返回值里，事后无从查起、面板只能说"没挂载"）。快照因此能回答"它为什么没起来"。
+- `Contribution::target_name()`：哪些贡献参与 `Invoke` 寻址是**协议的知识**，
+  从 SDK 挪到变体定义旁边——否则每个调用方都得 match 一遍 `Tool`/`Skill`，
+  被迫认识它不该认识的词。
+
+### 门禁
+
+- 领域词审计不再排除 `echo-plugin-api` / `echo-plugin-sdk`（此前排除等于这两个
+  crate 里新增任何领域词都不会被发现）。改为 `KNOWN_DOMAIN_RESIDUE` 白名单：
+  已知残留逐条登记，新增的报错。
+- 新增防腐烂测试 `known_residue_entries_must_still_be_needed`：白名单条目一旦
+  不再触发违规就报错，逼着同步删除——否则白名单只会单向变厚。
+- `rust_files` 跳过 `tests.rs`（`#[cfg(test)] mod tests;` 的目标文件）：此前它被
+  当生产代码审计，只会逼着测试里换词。
 
 ### 变更
 

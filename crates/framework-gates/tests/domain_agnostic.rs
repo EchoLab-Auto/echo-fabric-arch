@@ -3,11 +3,23 @@
 //! 判据（EchoAgentCore `document/design/echo-fabric-arch-extraction.md` §2.1）：
 //! 框架 crate 的生产代码不认识应用领域词汇；框架 crate 不依赖领域/内核 crate。
 //!
-//! 覆盖范围**暂时不含** `echo-plugin-api` / `echo-plugin-sdk`：协议的贡献分类
-//! 仍是领域词汇（`Contribution::Tool` / `Skill` / `PluginInstance`，wire tag
-//! 还保留着历史名 `adapter`），去业务化排在 M5 且有兼容性门槛。那两件的
-//! 机制层（帧 / 握手 / serve 循环）与领域无关，只是协议表面尚未收敛——这一点
-//! 在 README 与 CHANGELOG 里都已写明，不靠本门禁假装干净。
+//! ## 覆盖范围与已知残留
+//!
+//! **全部**框架 crate 都参与审计——包括曾经被排除的 `echo-plugin-api` /
+//! `echo-plugin-sdk`。被排除过的那段时间里，`echo-plugin-api` 长出了一整套
+//! QQ 聊天平台类型（`MessageTarget` / `ChannelType` / `IncomingMessage`），
+//! 而排查发现它们**零使用者**：EchoAgentCore 用自己的 `echo-defs::chat` 副本，
+//! 本仓内部只有一条测试在测它们的 serde 往返。已删除。
+//!
+//! 现存残留用 [`KNOWN_DOMAIN_RESIDUE`] 显式列出，而不是把整个 crate 排除：
+//!
+//! - 排除整个 crate = 这个 crate 里**新增**任何领域词都不会被发现；
+//! - 白名单 = 已知的有记录、新增的会红，且每条都写着为什么还在。
+//!
+//! 残留判断依据（2026-11 实测）：`Contribution::Tool` / `Skill` /
+//! `PluginInstance` 在 EchoAgentCore 与本仓内部都只被**测试与 conformance
+//! 夹具**使用，没有真实生产者或消费者。它们的存在理由是「线上协议已发布，
+//! 删变体要单独走兼容窗口」，而不是「还有人在用」。
 //!
 //! 为什么用门禁而不是评审：`MountContext.tools` / `PluginKind::{Tool,Skill}` /
 //! `PluginToolSink` 这类东西**当初都是善意加的**（"给外部插件预留的接缝"），
@@ -21,7 +33,33 @@ const AUDITED_CRATES: &[&str] = &[
     "echo-plugin",
     "echo-plugin-loader",
     "echo-plugin-host",
+    "echo-plugin-api",
+    "echo-plugin-sdk",
 ];
+
+/// 已知的领域残留：`(crate, 文件相对 crate 的路径, 词)`。
+///
+/// 每一条都要能回答「为什么还在」。想新增一条 = 先证明它删不掉。
+///
+/// **粒度是「文件 + 词」而不是「文件 + 词 + 行」**：行号会随编辑漂移，比白名单
+/// 腐烂更难维护。代价是同一个文件里**新加**的 `tool` 也会被豁免——所以白名单
+/// 只覆盖变体定义所在的那一个文件；新代码一律不该出现在这里。
+///
+/// 配套的 `known_residue_entries_must_still_be_needed` 会在某条不再触发违规时
+/// 报错，逼着删掉过时条目——否则白名单只会越积越厚。
+const KNOWN_DOMAIN_RESIDUE: &[(&str, &str, &str)] = &[
+    // 贡献变体本身：`Contribution::Tool` / `Skill` / `PluginInstance` 是**线上
+    // 协议已发布**的变体，删它们要单独走兼容窗口（不是"还有人用"——实测没有）。
+    ("echo-plugin-api", "src/contribution.rs", "tool"),
+    ("echo-plugin-api", "src/contribution.rs", "skill"),
+];
+
+/// 一条违规是否已在白名单里。
+fn is_known_residue(crate_name: &str, rel_path: &str, word: &str) -> bool {
+    KNOWN_DOMAIN_RESIDUE
+        .iter()
+        .any(|(c, p, w)| *c == crate_name && *p == rel_path && *w == word)
+}
 
 /// 全仓禁止出现的应用领域词汇（任意 crate 的 Cargo.toml 依赖都受此约束）。
 const FORBIDDEN_DEPS: &[&str] = &["echo-defs", "echo-agent", "echo-protocol", "echo-session"];
@@ -70,6 +108,12 @@ fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
             }
             rust_files(&path, out);
         } else if path.extension().is_some_and(|e| e == "rs") {
+            // `tests.rs` 是 `#[cfg(test)] mod tests;` 的目标文件（编译期只在
+            // 测试配置下存在），与文件内的 `#[cfg(test)] mod …` 等价。把它当
+            // 生产代码审，只会逼测试里换词——降低测试可读性，不会让框架更干净。
+            if path.file_name().is_some_and(|n| n == "tests.rs") {
+                continue;
+            }
             out.push(path);
         }
     }
@@ -131,6 +175,43 @@ fn declared_deps(manifest: &Path) -> Vec<String> {
     out
 }
 
+/// 白名单不许腐烂：每一条都必须在当前代码里**仍然触发违规**。
+///
+/// 没有这条，白名单只会单向变厚——某个残留删掉后条目留着，下次同样的词再出现
+/// 就静默被豁免，而没人会回头检查。这条测试让"删干净了"必须同步删条目。
+#[test]
+fn known_residue_entries_must_still_be_needed() {
+    let root = repo_root();
+    let mut stale = Vec::new();
+
+    for (crate_name, rel_path, word) in KNOWN_DOMAIN_RESIDUE {
+        assert!(
+            FORBIDDEN_WORDS.contains(word),
+            "白名单条目「{crate_name}/{rel_path}: {word}」里的词不在 FORBIDDEN_WORDS              中——它对审计毫无作用，删掉它"
+        );
+        let file = root.join("crates").join(crate_name).join(rel_path);
+        let Ok(text) = std::fs::read_to_string(&file) else {
+            stale.push(format!("{crate_name}/{rel_path}: 文件不存在"));
+            continue;
+        };
+        let still_there = production_part(&text)
+            .lines()
+            .any(|line| contains_word(line, word));
+        if !still_there {
+            stale.push(format!(
+                "{crate_name}/{rel_path}: 已不再出现「{word}」"
+            ));
+        }
+    }
+
+    assert!(
+        stale.is_empty(),
+        "KNOWN_DOMAIN_RESIDUE 有过时条目（残留已删干净，条目却还在）。\n\
+         过时条目会让下一次同样的词静默通过审计，请删掉：\n{}",
+        stale.join("\n")
+    );
+}
+
 #[test]
 fn framework_production_code_has_no_domain_vocabulary() {
     let root = repo_root();
@@ -145,16 +226,24 @@ fn framework_production_code_has_no_domain_vocabulary() {
             let Ok(text) = std::fs::read_to_string(&file) else {
                 continue;
             };
+            // 相对 crate 根的路径（白名单按 `(crate, 相对路径, 词)` 匹配）。
+            let rel = file
+                .strip_prefix(root.join("crates").join(crate_dir))
+                .unwrap_or(&file)
+                .display()
+                .to_string()
+                .replace('\\', "/");
             for (idx, line) in production_part(&text).lines().enumerate() {
                 for word in FORBIDDEN_WORDS {
-                    if contains_word(line, word) {
-                        violations.push(format!(
-                            "{}:{}: 「{word}」— {}",
-                            file.strip_prefix(&root).unwrap_or(&file).display(),
-                            idx + 1,
-                            line.trim()
-                        ));
+                    if !contains_word(line, word) || is_known_residue(crate_dir, &rel, word) {
+                        continue;
                     }
+                    violations.push(format!(
+                        "{}:{}: 「{word}」— {}",
+                        file.strip_prefix(&root).unwrap_or(&file).display(),
+                        idx + 1,
+                        line.trim()
+                    ));
                 }
             }
         }
@@ -163,7 +252,8 @@ fn framework_production_code_has_no_domain_vocabulary() {
     assert!(
         violations.is_empty(),
         "框架层出现了应用领域词汇（框架不该认识它们；要注册领域贡献请走 \
-         `Ctx::provide` 服务键，或放进宿主侧的适配层）：\n{}",
+         `Ctx::provide` 服务键，或放进宿主侧的适配层）。\n\
+         若确实删不掉（线上协议已发布等），把它连同理据加进 KNOWN_DOMAIN_RESIDUE：\n{}",
         violations.join("\n")
     );
 }

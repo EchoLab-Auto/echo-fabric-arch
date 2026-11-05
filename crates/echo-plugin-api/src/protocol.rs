@@ -68,10 +68,10 @@ pub struct Invoke {
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct InvokeContext {
-    /// 归属会话 id（checklist / shell 类工具的按会话隔离依据）。
+    /// 归属会话 id（宿主自定义语义；框架只透传）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
-    /// 归属人格（多 persona 消歧）。
+    /// 归属分组 id（宿主自定义语义；框架只透传）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub team_id: Option<String>,
     /// 归属回复分支（临时分支可见性）。
@@ -151,7 +151,7 @@ pub struct InvokeResult {
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum InvokeOutcome {
     Ok {
-        /// **遗留字段**（agent 文本/多模态场景）。新代码请用
+        /// **遗留字段**（文本 / 多模态宿主场景）。新代码请用
         /// [`InvokeOutcome::data`]，只填 `result`。
         ///
         /// 保留是为了旧插件仍能解码：删字段会破坏线上兼容，而去业务化

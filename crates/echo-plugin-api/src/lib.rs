@@ -26,8 +26,8 @@ pub mod contribution;
 pub mod protocol;
 
 pub use contribution::{
-    ChannelType, CommandContribution, Contribution, EventContribution, IncomingMessage,
-    InstanceCapabilities, InstanceContribution, MessageTarget, ServiceContribution,
+    CommandContribution, Contribution, EventContribution,
+    InstanceCapabilities, InstanceContribution, ServiceContribution,
     SkillContribution, TextBlockContribution, ToolContribution,
 };
 pub use protocol::{
