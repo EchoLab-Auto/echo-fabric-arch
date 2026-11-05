@@ -40,9 +40,10 @@ graph TB
 
 ## 三个边界的具体位置
 
-**`echo-plugin` 不认识"工具"**。它只认识 manifest、生命周期、服务键。所以
-"把插件的 `Contribution::Tool` 变成宿主能调用的东西"这件事，不在框架里，在
-宿主的适配层（EchoAgent 里是 `echo-plugin-adapter`）。
+**`echo-plugin` 不认识任何业务分类**。它只认识 manifest、生命周期、服务键。
+所以"把插件的 `Contribution::Custom { kind, … }` 变成宿主能调用的东西"这件事，
+不在框架里，在宿主的适配层（领域宿主自己实现，框架只把 `kind` 与 `payload`
+原样搬过去）。
 
 **`echo-context` 不认识"插件"**。它只是服务表 + 事件总线 + 撤销句柄；插件是
 `echo-plugin` 的事。所以一个只想解决依赖注入的项目可以**只拿 `echo-context`**。

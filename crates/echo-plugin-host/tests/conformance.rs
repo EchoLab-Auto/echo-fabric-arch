@@ -298,15 +298,16 @@ fn expect_err(result: Result<PluginHandle, TransportError>, what: &str) -> Trans
     }
 }
 
-fn tool(name: &str) -> ToolContribution {
-    ToolContribution {
+/// 一个可寻址的贡献（`kind` 由宿主自定义，框架只透传）。
+fn op(name: &str) -> Contribution {
+    Contribution::Custom {
+        kind: "host_defined".to_string(),
         name: name.to_string(),
-        description: format!("{name} 工具"),
-        parameters: json!({"type": "object", "properties": {"text": {"type": "string"}}}),
-        category: "demo".to_string(),
-        timeout_hint_secs: Some(42),
-        package: Some("test.pkg".to_string()),
-        visible_reply: false,
+        payload: json!({
+            "description": format!("{name} 操作"),
+            "schema": {"type": "object", "properties": {"text": {"type": "string"}}},
+            "priority": 42,
+        }),
     }
 }
 
@@ -315,15 +316,15 @@ fn tool(name: &str) -> ToolContribution {
 /// a. 握手成功：Welcome + Register + Ready → Ready，贡献字段原样保留。
 #[tokio::test]
 async fn a_handshake_registers_contributions() {
-    let registered = tool("echo");
+    let registered = op("echo");
     let script = Script {
-        contributions: vec![Contribution::Tool(registered.clone())],
+        contributions: vec![registered.clone()],
         ..Default::default()
     };
     let (handle, obs) = start_plugin(script).await;
 
     assert_eq!(handle.state(), PluginState::Ready);
-    assert_eq!(handle.contributions(), vec![Contribution::Tool(registered)]);
+    assert_eq!(handle.contributions(), vec![registered]);
     let ob = obs.lock().unwrap();
     assert!(ob.hello.is_some(), "插件应收到 Hello");
     assert!(ob.ready_sent, "插件应发出 Ready");
@@ -626,23 +627,23 @@ async fn k_transport_reports_closed_on_plugin_exit() {
 /// l. Register 整体替换语义：第二次 Register 之后旧贡献不保留。
 #[tokio::test]
 async fn l_register_replaces_contributions() {
-    let first = tool("first");
-    let second = tool("second");
+    let first = op("first");
+    let second = op("second");
     let script = Script {
-        contributions: vec![Contribution::Tool(first.clone())],
+        contributions: vec![first.clone()],
         reaction: Reaction::Refresh {
-            next: vec![Contribution::Tool(second.clone())],
+            next: vec![second.clone()],
         },
         ..Default::default()
     };
     let (handle, _obs) = start_plugin(script).await;
-    assert_eq!(handle.contributions(), vec![Contribution::Tool(first)]);
+    assert_eq!(handle.contributions(), vec![first]);
 
     let out = handle.invoke("refresh", ctx(), json!({})).await;
     assert_eq!(out, InvokeOutcome::ok("refreshed"));
     assert_eq!(
         handle.contributions(),
-        vec![Contribution::Tool(second)],
+        vec![second],
         "Register 必须整体替换（旧贡献不得残留）"
     );
 }

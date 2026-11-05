@@ -26,9 +26,8 @@ pub mod contribution;
 pub mod protocol;
 
 pub use contribution::{
-    CommandContribution, Contribution, EventContribution,
-    InstanceCapabilities, InstanceContribution, ServiceContribution,
-    SkillContribution, TextBlockContribution, ToolContribution,
+    CommandContribution, Contribution, EventContribution, ServiceContribution,
+    TextBlockContribution,
 };
 pub use protocol::{
     compatible, Cancel, Drain, Emit, EventNotification, Failure, Hello, HostCall, HostCallOutcome,
@@ -40,22 +39,14 @@ pub use protocol::{
 ///
 /// 双方都声明才可用；宿主与插件勿硬编码字面量。
 pub mod capabilities {
-    /// 插件提供面向模型的工具贡献。
-    pub const TOOLS: &str = "tools";
-    /// 插件提供技能贡献。
-    pub const SKILLS: &str = "skills";
     /// 插件提供以键注册的服务贡献。
     pub const SERVICES: &str = "services";
     /// 插件订阅宿主事件（`HostToPlugin::Event` 才会送达）。
     pub const EVENTS: &str = "events";
     /// 插件支持取消语义（Cancel 送达 + `Error{code:"cancelled"}` 回发）。
     pub const CANCEL: &str = "cancel";
-    /// 插件支持宿主服务回呼（`HostCall` / `HostCallResult`；P2 新增）。
+    /// 插件支持宿主服务回呼（`HostCall` / `HostCallResult`）。
     pub const HOST_CALL: &str = "host_call";
-    /// 插件提供插件实例贡献（`Contribution::PluginInstance`；W1.3 / P1，2026-10
-    /// 实例插件化）。wire 字符串保持 `adapter` 以兼容已部署插件（2026-10 去
-    /// 适配器化时改名，握手比对的是字符串，因此不能与旧值断开）。
-    pub const PLUGIN_INSTANCE: &str = "adapter";
 }
 
 #[cfg(test)]

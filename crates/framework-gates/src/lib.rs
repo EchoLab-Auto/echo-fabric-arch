@@ -7,8 +7,9 @@
 //! 门禁清单：
 //! - `tests/no_core_dependency.rs`：框架不反向依赖宿主（只有 sdk → api 一条边）
 //! - `tests/no_global_state.rs`：库代码零进程级单例
+//! - `tests/domain_agnostic.rs`：**全部** crate 的生产代码不含应用领域词汇
 //!
-//! 领域词汇门禁暂不在此：`echo-plugin-api` 的协议仍带领域分类贡献
-//! （`Contribution::Tool` / `Skill` / `PluginInstance`，去业务化排在 M5）。
-//! 宿主侧的那条门禁（EchoAgentCore `tests/framework_domain_agnostic.rs`）
-//! 覆盖纯机制 crate，随 M3 六件套迁入后搬到这里。
+//! 第三条覆盖每一个 crate——包括 `echo-plugin-api` / `echo-plugin-sdk`。它们曾
+//! 被长期排除（理由是"协议表面尚未收敛"），代价是一整套聊天平台类型在豁免下
+//! 长了出来。现在协议的领域分类改由宿主自定义的 `Contribution::Custom`
+//! 承载，这两件也一起纳入审计。

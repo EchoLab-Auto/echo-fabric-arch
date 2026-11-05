@@ -30,7 +30,7 @@ use std::time::Duration;
 
 use echo_plugin_api::{
     capabilities, Contribution, Emit, Hello, HostToPlugin, InvokeOutcome, InvokeResult, LogLevel,
-    LogRecord, PluginToHost, Register, ToolContribution, Welcome,
+    LogRecord, PluginToHost, Register, Welcome,
 };
 use serde_json::{json, Value};
 
@@ -164,7 +164,7 @@ fn on_hello(writer: &mut impl Write, hello: &Hello, split: bool) {
             version: hello.version,
             plugin_id: hello.plugin_id.clone(),
             capabilities: vec![
-                capabilities::TOOLS.to_string(),
+                capabilities::SERVICES.to_string(),
                 capabilities::CANCEL.to_string(),
             ],
         }),
@@ -173,31 +173,33 @@ fn on_hello(writer: &mut impl Write, hello: &Hello, split: bool) {
     send(
         writer,
         &PluginToHost::Register(Register {
-            contributions: vec![Contribution::Tool(echo_tool())],
+            contributions: vec![echo_contribution()],
         }),
         split,
     );
     send(writer, &PluginToHost::Ready, split);
 }
 
-/// 注册的 `echo` 工具（参数 schema 与测试断言对应）。
-fn echo_tool() -> ToolContribution {
-    ToolContribution {
+/// 注册的 `echo` 贡献：`kind` 由宿主（这里是测试）自己定义，框架只透传。
+///
+/// 用 `Custom` 而不是枚举里某个具体变体，正是为了证明**协议不需要认识
+/// 业务分类**——夹具想叫什么就叫什么。
+fn echo_contribution() -> Contribution {
+    Contribution::Custom {
+        kind: "host_defined".to_string(),
         name: "echo".to_string(),
-        description: "回显 payload（stdio 测试插件）".to_string(),
-        parameters: json!({
-            "type": "object",
-            "properties": {
-                "text": {"type": "string"},
-                "show_config": {"type": "boolean"},
-                "crash": {"type": "boolean"},
-                "hang": {"type": "boolean"},
+        payload: json!({
+            "description": "回显 payload（stdio 测试插件）",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string"},
+                    "show_config": {"type": "boolean"},
+                    "crash": {"type": "boolean"},
+                    "hang": {"type": "boolean"},
+                },
             },
         }),
-        category: "plugin".to_string(),
-        timeout_hint_secs: None,
-        package: Some("echo-plugin-host.test-peer".to_string()),
-        visible_reply: false,
     }
 }
 

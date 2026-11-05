@@ -28,8 +28,8 @@ fn host_messages_roundtrip() {
         call_id: "websearch:1".into(),
         contribution: "web_search".into(),
         ctx: InvokeContext {
-            session_id: Some("local:tui::local_user".into()),
-            team_id: Some("alix".into()),
+            session_id: Some("scope-1".into()),
+            team_id: Some("group-a".into()),
             branch_id: None,
             deadline_ms: Some(30_000),
         },
@@ -39,7 +39,7 @@ fn host_messages_roundtrip() {
         call_id: "websearch:1".into(),
     }));
     roundtrip_host(HostToPlugin::Event(EventNotification {
-        event: "session/start".into(),
+        event: "resource/created".into(),
         payload: json!({"id": "s1"}),
     }));
     roundtrip_host(HostToPlugin::Drain(Drain { deadline_ms: 5_000 }));
@@ -52,18 +52,21 @@ fn plugin_messages_roundtrip() {
         protocol: PROTOCOL_NAME.into(),
         version: PROTOCOL_VERSION,
         plugin_id: "websearch".into(),
-        capabilities: vec!["tools".into(), "cancel".into()],
+        capabilities: vec!["services".into(), "cancel".into()],
     }));
     roundtrip_plugin(PluginToHost::Register(Register {
-        contributions: vec![Contribution::Tool(ToolContribution {
-            name: "web_search".into(),
-            description: "搜索".into(),
-            parameters: json!({"type": "object"}),
-            category: "builtin".into(),
-            timeout_hint_secs: Some(60),
-            package: Some("echo-agent.tools.builtin".into()),
-            visible_reply: false,
-        })],
+        contributions: vec![
+            Contribution::Service(ServiceContribution {
+                key: "greeter".into(),
+                kind: "greeter".into(),
+                version: 1,
+            }),
+            Contribution::Custom {
+                kind: "host_defined".into(),
+                name: "some_op".into(),
+                payload: json!({"shape": "由宿主与插件自行约定"}),
+            },
+        ],
     }));
     roundtrip_plugin(PluginToHost::InvokeResult(InvokeResult {
         call_id: "websearch:1".into(),
@@ -81,7 +84,7 @@ fn plugin_messages_roundtrip() {
         },
     }));
     roundtrip_plugin(PluginToHost::Emit(Emit {
-        event: "tool/result".into(),
+        event: "op/finished".into(),
         payload: json!({}),
     }));
     roundtrip_plugin(PluginToHost::Log(LogRecord {
@@ -195,89 +198,107 @@ fn invoke_context_defaults_and_omission() {
 }
 
 #[test]
-fn instance_contribution_roundtrip_and_capabilities() {
-    // P1（实例插件化）：InstanceContribution 线上形态（贡献 + 能力位 +
-    // 词汇结构）。
-    let instance = Contribution::PluginInstance(InstanceContribution {
-        name: "qq".into(),
-        platform: "qq".into(),
-        display_name: "QQ / OneBot".into(),
-        capabilities: InstanceCapabilities {
-            send_text: true,
-            send_media: true,
-            groups: true,
-            friends: true,
-            gating: true,
-            login: true,
-        },
-        config_schema: None,
-        ui: Some(json!({"version": 1, "panels": []})),
-        session_labels: Some(json!({"dm": "私聊", "group": "群"})),
-        tools: Vec::new(),
-    });
-    let text = serde_json::to_string(&instance).unwrap();
+fn custom_contribution_carries_host_defined_shape() {
+    // 领域词汇的唯一入口：宿主自带分类，框架只搬 kind + payload。
+    let custom = Contribution::Custom {
+        kind: "whatever_the_host_calls_it".into(),
+        name: "some_op".into(),
+        payload: json!({ "shape": "由宿主与插件自行约定", "n": 1 }),
+    };
+    let text = serde_json::to_string(&custom).unwrap();
     let back: Contribution = serde_json::from_str(&text).unwrap();
-    assert_eq!(instance, back);
+    assert_eq!(custom, back);
 
-    // 缺省能力位全 false（fail-closed：宿主只调用声明过的方法）。
-    let caps: InstanceCapabilities = serde_json::from_value(json!({})).expect("defaults");
-    assert!(!caps.send_text && !caps.gating && !caps.login);
+    // 线上标签是 `custom`，分类字段必须改名（`kind` 已被枚举 tag 占用）。
+    let value = serde_json::to_value(&custom).unwrap();
+    assert_eq!(value["kind"], json!("custom"), "{value}");
+    assert_eq!(value["custom_kind"], json!("whatever_the_host_calls_it"));
+    let object = value.as_object().expect("对象");
+    assert_eq!(
+        text.matches("\"kind\"").count(),
+        1,
+        "载荷字段不能叫 kind，否则与枚举 tag 重复：{text}"
+    );
+    assert!(object.contains_key("custom_kind"));
 
-    // 注：`MessageTarget` / `ChannelType` / `IncomingMessage`（QQ 出站寻址与
-    // 入站消息）曾在 v0.13 之前定义于此 crate。那是从 EchoAgentCore 带过来的
-    // 聊天平台词汇，**零使用者**——EchoAgentCore 用自己的 `echo-defs::chat`
-    // 副本，本仓内部也只有这个测试在测它们的 serde 往返。已删除。
-}
-
-/// wire tag 冻结：`Contribution::PluginInstance` 在线上必须仍是 `adapter`。
-///
-/// 宿主与插件是两个可独立升级的进程；改这个字符串会同时打断「新 Core +
-/// 已部署旧插件」与「旧 Core + 新插件」两个方向。Rust 侧改名（`Adapter` →
-/// `PluginInstance`）是内部可读性，线上一字节不动。
-#[test]
-fn plugin_instance_contribution_wire_tag_is_frozen() {
-    let value = serde_json::to_value(Contribution::PluginInstance(InstanceContribution {
-        name: "qq".into(),
-        platform: "qq".into(),
-        display_name: "QQ".into(),
-        capabilities: InstanceCapabilities::default(),
-        config_schema: None,
-        ui: None,
-        session_labels: None,
-        tools: Vec::new(),
+    // 最小形态：只给分类，name / payload 都可省。
+    let minimal: Contribution = serde_json::from_value(json!({
+        "kind": "custom",
+        "custom_kind": "anything"
     }))
-    .unwrap();
-    assert_eq!(value["kind"], serde_json::json!("adapter"), "{value}");
-    // 别名也接受（未来换 tag 的过渡窗口）。
-    let back: Contribution = serde_json::from_value(serde_json::json!({
-        "kind": "plugin_instance",
-        "name": "qq",
-        "platform": "qq",
-        "display_name": "QQ"
-    }))
-    .unwrap();
-    assert!(matches!(back, Contribution::PluginInstance(_)));
+    .expect("最小形态应可解码");
+    assert_eq!(minimal.custom_kind(), Some("anything"));
+    assert_eq!(minimal.target_name(), None, "没有 name 就不参与寻址");
 }
 
 #[test]
 fn contribution_shapes() {
-    let tool = Contribution::Tool(ToolContribution {
-        name: "bash".into(),
-        description: "d".into(),
-        parameters: json!({}),
-        category: "builtin".into(),
-        timeout_hint_secs: None,
-        package: None,
-        visible_reply: false,
+    let service = Contribution::Service(ServiceContribution {
+        key: "k".into(),
+        kind: "".into(),
+        version: 0,
     });
-    let text = serde_json::to_string(&tool).unwrap();
+    let text = serde_json::to_string(&service).unwrap();
     let back: Contribution = serde_json::from_str(&text).unwrap();
-    assert_eq!(tool, back);
-    // 最小字段集：缺省 category 回退 "plugin"，parameters 回退 null
-    let minimal: ToolContribution =
-        serde_json::from_value(json!({"name": "t", "description": "d"})).unwrap();
-    assert_eq!(minimal.category, "plugin");
-    assert_eq!(minimal.parameters, json!(null));
+    assert_eq!(service, back);
+    // 最小字段集：kind / version 都可省。
+    let minimal: ServiceContribution = serde_json::from_value(json!({"key": "k"})).unwrap();
+    assert_eq!(minimal.kind, "");
+    assert_eq!(minimal.version, 0);
+}
+
+#[test]
+fn target_name_covers_exactly_the_addressable_variants() {
+    let cases: Vec<(Contribution, Option<&str>)> = vec![
+        (
+            Contribution::Service(ServiceContribution {
+                key: "svc".into(),
+                kind: String::new(),
+                version: 1,
+            }),
+            Some("svc"),
+        ),
+        (
+            Contribution::Command(CommandContribution {
+                name: "do_thing".into(),
+                description: String::new(),
+            }),
+            Some("do_thing"),
+        ),
+        (
+            Contribution::Custom {
+                kind: "k".into(),
+                name: "op".into(),
+                payload: json!(null),
+            },
+            Some("op"),
+        ),
+        (
+            Contribution::Custom {
+                kind: "k".into(),
+                name: String::new(),
+                payload: json!(null),
+            },
+            None,
+        ),
+        (
+            Contribution::Text(TextBlockContribution {
+                key: "blk".into(),
+                label: String::new(),
+                order: 0,
+            }),
+            None,
+            // 文本块是"宿主来取"而不是"宿主来调"，所以不参与寻址。
+        ),
+        (Contribution::Events(EventContribution::default()), None),
+    ];
+    for (contribution, expected) in cases {
+        assert_eq!(
+            contribution.target_name(),
+            expected,
+            "寻址名不符：{contribution:?}"
+        );
+    }
 }
 
 /// **每个贡献变体都必须能过一遍 JSON**。
@@ -295,23 +316,7 @@ fn contribution_shapes() {
 /// 单条轨上可用。
 #[test]
 fn every_contribution_variant_roundtrips_through_json() {
-    use crate::contribution::InstanceCapabilities;
-
     let variants = vec![
-        Contribution::Tool(ToolContribution {
-            name: "bash".into(),
-            description: "run a command".into(),
-            parameters: json!({ "type": "object" }),
-            category: "builtin".into(),
-            timeout_hint_secs: Some(30),
-            package: Some("acme.pkg".into()),
-            visible_reply: true,
-        }),
-        Contribution::Skill(SkillContribution {
-            name: "deploy".into(),
-            description: "how to deploy".into(),
-            path: Some("/skills/deploy".into()),
-        }),
         Contribution::Service(ServiceContribution {
             key: "greeter".into(),
             kind: "greeter".into(),
@@ -320,16 +325,20 @@ fn every_contribution_variant_roundtrips_through_json() {
         Contribution::Events(EventContribution {
             subscribe: vec!["tick".into(), "tock".into()],
         }),
-        Contribution::PluginInstance(InstanceContribution {
-            name: "demo".into(),
-            platform: "demo".into(),
-            display_name: "Demo".into(),
-            capabilities: InstanceCapabilities::default(),
-            config_schema: None,
-            ui: None,
-            session_labels: None,
-            tools: vec![],
+        Contribution::Command(CommandContribution {
+            name: "do_thing".into(),
+            description: "处理某类调用".into(),
         }),
+        Contribution::Text(TextBlockContribution {
+            key: "plugin:block".into(),
+            label: "标题".into(),
+            order: 5,
+        }),
+        Contribution::Custom {
+            kind: "host_defined".into(),
+            name: "some_op".into(),
+            payload: json!({ "arbitrary": ["shape", 1] }),
+        },
     ];
 
     for contribution in variants {

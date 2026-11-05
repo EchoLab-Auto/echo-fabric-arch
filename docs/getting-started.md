@@ -25,7 +25,7 @@
 
 ```toml
 [dependencies]
-echo-plugin-sdk = { git = "https://github.com/EchoLab-Auto/echo-fabric-arch", tag = "v0.13.0" }
+echo-plugin-sdk = { git = "https://github.com/EchoLab-Auto/echo-fabric-arch", tag = "v0.14.0" }
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -73,8 +73,8 @@ async fn main() {
 
 ```toml
 [dependencies]
-echo-context = { git = "…", tag = "v0.13.0" }
-echo-plugin-host = { git = "…", tag = "v0.13.0" }
+echo-context = { git = "…", tag = "v0.14.0" }
+echo-plugin-host = { git = "…", tag = "v0.14.0" }
 ```
 
 ```rust
@@ -152,7 +152,7 @@ let transport = StdioTransport::new("./plugin")
 
 ## 版本与兼容
 
-- 本仓是**单一版本**（workspace 共享）。用 `tag = "v0.13.0"` 钉住，`Cargo.lock`
+- 本仓是**单一版本**（workspace 共享）。用 `tag = "v0.14.0"` 钉住，`Cargo.lock`
   会进一步钉死 rev。
 - `PROTOCOL_VERSION` 与 crate 版本**独立**：改线上帧格式才 bump 协议版本（握手会
   fail-closed 拒绝旧端）；只改 Rust API 表面只 bump crate 版本。
@@ -160,9 +160,9 @@ let transport = StdioTransport::new("./plugin")
 
 ## 已知边界
 
-- `Contribution` 目前仍带 `Tool` / `Skill` / `PluginInstance` 三个**应用领域**
-  分类（历史遗留）。机制上它们是通用的（宿主怎么解释随你），但协议表面承认了这些
-  词汇——去业务化排在 M5，需要 2 个以上真实外部使用者才动手。
+- `Contribution` 的四个分类（服务 / 事件 / 命令 / 文本块）都与业务无关。领域
+  想法走 `Contribution::Custom { kind, payload }`：`kind` 是**你自己的词汇**，
+  框架只搬运、不解释。2026-11 已删除此前的三个领域分类与三个聊天平台类型。
 - 进程级单例表**不在**框架里（那是宿主机制）。要「这个进程只有一份」，用 `Ctx`
   显式注入；它天然支持多份互不干扰，同一进程能起两套宿主。
 

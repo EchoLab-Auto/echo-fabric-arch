@@ -274,20 +274,16 @@ impl InprocPlugin for EchoInstance {
                                 protocol: hello.protocol.clone(),
                                 version: hello.version,
                                 plugin_id: hello.plugin_id.clone(),
-                                capabilities: vec![capabilities::TOOLS.to_string()],
+                                capabilities: vec![capabilities::SERVICES.to_string()],
                             }))
                             .await;
                         let _ = io
                             .send(PluginToHost::Register(Register {
-                                contributions: vec![Contribution::Tool(ToolContribution {
+                                contributions: vec![Contribution::Custom {
+                                    kind: "host_defined".to_string(),
                                     name: "echo".to_string(),
-                                    description: "回显".to_string(),
-                                    parameters: json!({"type": "object"}),
-                                    category: "plugin".to_string(),
-                                    timeout_hint_secs: None,
-                                    package: Some("upgrade-test.peer".to_string()),
-                                    visible_reply: false,
-                                })],
+                                    payload: json!({"description": "回显"}),
+                                }],
                             }))
                             .await;
                         let _ = io.send(PluginToHost::Ready).await;
@@ -675,20 +671,16 @@ impl InprocPlugin for ChangingInstance {
                                 protocol: hello.protocol,
                                 version: hello.version,
                                 plugin_id: hello.plugin_id,
-                                capabilities: vec![capabilities::TOOLS.to_string()],
+                                capabilities: vec![capabilities::SERVICES.to_string()],
                             }))
                             .await;
                         let _ = io
                             .send(PluginToHost::Register(Register {
-                                contributions: vec![Contribution::Tool(ToolContribution {
+                                contributions: vec![Contribution::Custom {
+                                    kind: "host_defined".to_string(),
                                     name: tool_name.clone(),
-                                    description: "变化工具".to_string(),
-                                    parameters: json!({"type": "object"}),
-                                    category: "plugin".to_string(),
-                                    timeout_hint_secs: None,
-                                    package: None,
-                                    visible_reply: false,
-                                })],
+                                    payload: json!({"description": "变化后的贡献"}),
+                                }],
                             }))
                             .await;
                         let _ = io.send(PluginToHost::Ready).await;

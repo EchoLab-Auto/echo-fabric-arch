@@ -19,7 +19,7 @@ group: 实践
 
 ```toml
 [dependencies]
-echo-plugin-sdk = { git = "https://github.com/EchoLab-Auto/echo-fabric-arch", tag = "v0.13.0" }
+echo-plugin-sdk = { git = "https://github.com/EchoLab-Auto/echo-fabric-arch", tag = "v0.14.0" }
 tokio = { version = "1", features = ["full"] }
 serde_json = "1"
 ```
@@ -164,7 +164,7 @@ let out = self.host.lock().unwrap().as_ref().unwrap()
 ```rust
 BuiltinPlugin::new(manifest, mount_fn)
     .with_inject(Inject::new(["loop"]).with_optional(["sanitizer"]))
-    .with_subscriptions(["ToolCall"])                 // 想收哪些事件
+    .with_subscriptions(["ResourceCreated"])          // 想收哪些事件
     .with_event_handler(|event| {                     // 收到时做什么
         println!("{}: {}", event.name, event.payload);
         Ok(())

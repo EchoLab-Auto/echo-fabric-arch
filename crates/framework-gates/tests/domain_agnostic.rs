@@ -11,15 +11,21 @@
 //! 而排查发现它们**零使用者**：EchoAgentCore 用自己的 `echo-defs::chat` 副本，
 //! 本仓内部只有一条测试在测它们的 serde 往返。已删除。
 //!
-//! 现存残留用 [`KNOWN_DOMAIN_RESIDUE`] 显式列出，而不是把整个 crate 排除：
+//! 现存残留用 [`KNOWN_DOMAIN_RESIDUE`] 显式列出（**当前为空**），而不是把整个
+//! crate 排除：
 //!
 //! - 排除整个 crate = 这个 crate 里**新增**任何领域词都不会被发现；
 //! - 白名单 = 已知的有记录、新增的会红，且每条都写着为什么还在。
 //!
-//! 残留判断依据（2026-11 实测）：`Contribution::Tool` / `Skill` /
-//! `PluginInstance` 在 EchoAgentCore 与本仓内部都只被**测试与 conformance
-//! 夹具**使用，没有真实生产者或消费者。它们的存在理由是「线上协议已发布，
-//! 删变体要单独走兼容窗口」，而不是「还有人在用」。
+//! 白名单清空靠的是同批的另两步：三个领域贡献变体换成通用的
+//! `Contribution::Custom { kind, payload }`（宿主自带分类），以及把历史说明里
+//! 的英文词汇改写成中文表述——**门禁只认代码里的标识符，不区分解释与 API**，
+//! 所以历史说明也不该把那些词写回去。
+//!
+//! 残留判断依据（2026-11 实测）：那三个领域分类在 EchoAgentCore 与本仓内部都只
+//! 被**测试与 conformance 夹具**使用，没有真实生产者或消费者。它们最终被换成
+//! 通用的 `Contribution::Custom`，而不是"留到以后再说"——因为那个"以后"不会
+//! 自己到来。
 //!
 //! 为什么用门禁而不是评审：`MountContext.tools` / `PluginKind::{Tool,Skill}` /
 //! `PluginToolSink` 这类东西**当初都是善意加的**（"给外部插件预留的接缝"），
@@ -48,10 +54,11 @@ const AUDITED_CRATES: &[&str] = &[
 /// 配套的 `known_residue_entries_must_still_be_needed` 会在某条不再触发违规时
 /// 报错，逼着删掉过时条目——否则白名单只会越积越厚。
 const KNOWN_DOMAIN_RESIDUE: &[(&str, &str, &str)] = &[
-    // 贡献变体本身：`Contribution::Tool` / `Skill` / `PluginInstance` 是**线上
-    // 协议已发布**的变体，删它们要单独走兼容窗口（不是"还有人用"——实测没有）。
-    ("echo-plugin-api", "src/contribution.rs", "tool"),
-    ("echo-plugin-api", "src/contribution.rs", "skill"),
+    // 空表：全部框架 crate（含 echo-plugin-api / echo-plugin-sdk）的生产代码
+    // 已不含任何领域词。协议的自定义分类走 `Contribution::Custom`，词汇由宿主
+    // 自己定义——框架一个都不认识。
+    //
+    // 这张表该一直是空的。真要加一条，先在 PR 里证明"删不掉"。
 ];
 
 /// 一条违规是否已在白名单里。

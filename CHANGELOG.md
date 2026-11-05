@@ -4,7 +4,94 @@
 但每一处都记在这里。`PROTOCOL_VERSION` 是**线上契约**版本，与 crate 版本独立
 （判定规则见 [README](./README.md#版本与兼容)）。
 
-## [0.12.0] — 未发布（breaking）
+## [0.14.0] — 未发布（breaking）
+
+### 移除：贡献分类里的领域词汇
+
+`Contribution` 曾有五个变体，其中三个是**应用领域分类**：面向模型的工具声明
+（含 JSON Schema、UI 分类、"是否产生平台可见回复"）、技能目录（`SKILL.md`
+路径）、聊天平台插件实例（平台名、能力位、会话标签、UI 描述符）。
+
+2026-11 审计确认它们**零真实使用者**：EchoAgentCore 已经不依赖本仓（用自己
+仓库内的副本），本仓内部只有测试与 conformance 夹具在构造它们。删掉的是：
+
+- `Contribution::{Tool, Skill, PluginInstance}`
+- `ToolContribution` / `SkillContribution` / `InstanceContribution` /
+  `InstanceCapabilities`
+- SDK 的 `InstancePlugin` / `InstanceHandler` / `serve_instance_stdio`
+- `capabilities::{TOOLS, SKILLS, PLUGIN_INSTANCE}`
+
+### 新增：`Contribution::Custom`
+
+领域词汇的**唯一入口**：
+
+```rust
+Contribution::Custom {
+    custom_kind: String,   // 宿主自己的分类（"report_generator" / 任何字符串）
+    name: String,          // Invoke 寻址名（空 = 不参与寻址）
+    payload: Value,        // 宿主与插件自行约定，框架不校验
+}
+```
+
+线上标签是 `custom`，分类字段叫 `custom_kind`——载荷字段不能叫 `kind`，枚举
+tag 已经占了那个名字，重复键会让整帧解析失败（`Service` 变体踩过同一个坑）。
+
+这把「框架不该认识业务分类」从口号变成了结构：以后任何宿主想加一类贡献，写
+`Custom { kind: "它自己的词", .. }` 就行，**协议不需要改**。
+
+### 顺带：`Contribution::target_name()` / `custom_kind()`
+
+哪些贡献参与 `Invoke` 寻址是**协议的知识**，放在变体定义旁边。此前 SDK 里有个
+函数把每个变体挨个 match 一遍——不是因为它需要，而是因为它不得不穷尽枚举。
+现在 SDK 只调方法。
+
+### 协议兼容性：没有 bump `PROTOCOL_VERSION`
+
+删变体通常是线上格式变更。这次没 bump，理由可验证：**没有任何真实插件发送过
+那三个分类**（唯一的生产者是 echo-server-core 的面板插件，它只发 `Service`）。
+新宿主能解的帧集合小了一圈，但实际在跑的插件一个都没受影响。
+
+若将来发现确有外部插件在用，正确做法不是回退，而是让它改发 `Custom`——那才是
+它本来就该用的形状。
+
+### 门禁
+
+- 领域词审计不再排除 `echo-plugin-api` / `echo-plugin-sdk`（此前排除等于这两个
+  crate 里新增任何领域词都不会被发现，而那正是业务类型能长进来的原因）。改为
+  `KNOWN_DOMAIN_RESIDUE` 白名单：已知残留逐条登记，新增的报错。**本次清空至零条**。
+- 新增防腐烂测试 `known_residue_entries_must_still_be_needed`：白名单条目一旦
+  不再触发违规就报错，逼着同步删除——否则白名单只会单向变厚。
+- `rust_files` 跳过 `tests.rs`（`#[cfg(test)] mod tests;` 的目标文件）：此前它被
+  当生产代码审计，只会逼着测试里换词。
+
+### 文档
+
+- `document/boundaries.md` §二点五重写为「领域词汇已经清零」，把审计的实测数据
+  （谁用过、零使用者、EchoAgentCore 已不依赖本仓）写进决策记录。
+- `README` / `crates.md` / `why.md` / `quickstart.md` / `getting-started.md` 中
+  关于"协议表面尚未收敛"的表述同步更新。
+
+## [0.13.0] — 2026-11-28
+
+### 移除
+
+- **`MessageTarget` / `ChannelType` / `IncomingMessage`**（63 行）：从聊天平台
+  带过来的完整数据结构（出站寻址、私聊/群聊通道、入站消息含 `at_me` / 图片 /
+  文件）。2026-11 审计确认**零使用者**——本仓内部只有一条 serde 往返测试在测
+  它们，没有任何生产者构造过它们。
+
+### 新增
+
+- `Contribution::target_name()`：把「哪些贡献参与 `Invoke` 寻址」从 SDK 挪到
+  变体定义旁边。
+
+### 门禁
+
+- 领域词审计改为白名单制（详见 0.14.0 段），并清掉第一批残留。
+
+## [0.12.0] — 2026-11-28
+
+从第二个真实宿主（echo-server-core）的接入经验里带回来的四处缺口。
 
 ### 新增
 
@@ -39,37 +126,16 @@
   `HostCall` 回呼的完整说明（两种实现、身份、错误契约、三个坑、最小示例）。
   `examples/` 补上了回呼演示——此前框架最重要的机制之一**没有示例也没有文档**。
 
-### 移除
-
-- **`MessageTarget` / `ChannelType` / `IncomingMessage`**（63 行）：从聊天平台
-  带过来的完整数据结构。2026-11 审计确认**零使用者**——EchoAgentCore 用自己的
-  `echo-defs::chat` 副本，本仓内部只有一条 serde 往返测试。它们从未出现在任何
-  生产路径上，不属于"协议已发布需要兼容窗口"的情形。
-
 ### 变更（breaking）
 
 - `HostServiceRegistry::call` 由同步变异步，并新增 `caller` 参数：
   `async fn call(&self, caller: &str, service: &str, method: &str, payload: Value)`。
   这是内部调用点（supervisor）才用的 API，宿主一般只调 `register_*`。
-- `mount` 失败现在会**写入 descriptor 的 `error`**（此前只出现在 `mount_all` 的
-  返回值里，事后无从查起、面板只能说"没挂载"）。快照因此能回答"它为什么没起来"。
-- `Contribution::target_name()`：哪些贡献参与 `Invoke` 寻址是**协议的知识**，
-  从 SDK 挪到变体定义旁边——否则每个调用方都得 match 一遍 `Tool`/`Skill`，
-  被迫认识它不该认识的词。
-
-### 门禁
-
-- 领域词审计不再排除 `echo-plugin-api` / `echo-plugin-sdk`（此前排除等于这两个
-  crate 里新增任何领域词都不会被发现）。改为 `KNOWN_DOMAIN_RESIDUE` 白名单：
-  已知残留逐条登记，新增的报错。
-- 新增防腐烂测试 `known_residue_entries_must_still_be_needed`：白名单条目一旦
-  不再触发违规就报错，逼着同步删除——否则白名单只会单向变厚。
-- `rust_files` 跳过 `tests.rs`（`#[cfg(test)] mod tests;` 的目标文件）：此前它被
-  当生产代码审计，只会逼着测试里换词。
 
 ### 变更
 
-
+- `mount` 失败现在会**写入 descriptor 的 `error`**（此前只出现在 `mount_all` 的
+  返回值里，事后无从查起、面板只能说"没挂载"）。快照因此能回答"它为什么没起来"。
 - `Ctx::keys()` 的返回顺序改为**按名字排序**。底层是 `HashMap`（迭代顺序随机），
   而这份清单会进 `MissingService.available`（给人看的错误信息）与面板——随机顺序
   会让同一个错误每次长得不一样。顺带让文档里的示例输出可以固定下来。
@@ -80,11 +146,10 @@
   两种形态 → 跑起来 → 写插件 → 装进宿主 → 怎么组织应用 → 文档」的短结构。
 - 新增 [`document/structure.md`](./document/structure.md)「组织一个应用」：四层结构、
   五条纪律、一段代码该放哪的判据、两个反例、可搬的最小骨架。
-- 修 `document/quickstart.md` 里过期的 `tag = "v0.7.0"`（应为 `v0.11.2`）。
+- 修 `document/quickstart.md` 里过期的 `tag = "v0.7.0"`。
 - 修 `document/crates.md` 流程图里的 `-.门禁.->` 虚线语法——ProDoc 只支持
   `-->` 与 `-->|标签|`，那两行原本会被解析器跳过。
-- 对齐 `examples/README.md` 与 `docs/getting-started.md` 的行数与预期输出
-  （`keys()` 排序后输出固定）。
+- 对齐 `examples/README.md` 与 `docs/getting-started.md` 的行数与预期输出。
 
 ## [0.11.2] — 2026-11-28
 
@@ -179,7 +244,7 @@
 ## [0.9.0] — 2026-11-01
 
 命令处理补上**异步入口**——v0.8 的 `handle_command` 是同步的，只能做"不等"的
-事；真实命令域里几乎每条都要 IO（读盘、`spawn_blocking`、跨机���询）。
+事；真实命令域里几乎每条都要 IO（读盘、`spawn_blocking`、跨机查询）。
 
 ### 新增
 

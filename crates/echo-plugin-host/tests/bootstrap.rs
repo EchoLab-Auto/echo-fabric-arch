@@ -133,15 +133,13 @@ async fn start_plugins_all_success_path() {
     assert!(started.errors.is_empty(), "errors: {:?}", started.errors);
 
     let handle = &started.handles[0];
-    let tool_names: Vec<String> = handle
+    let op_names: Vec<String> = handle
         .contributions()
-        .into_iter()
-        .filter_map(|c| match c {
-            Contribution::Tool(t) => Some(t.name),
-            _ => None,
-        })
+        .iter()
+        .filter_map(Contribution::target_name)
+        .map(str::to_string)
         .collect();
-    assert_eq!(tool_names, vec!["echo"], "对端注册一个工具（echo）");
+    assert_eq!(op_names, vec!["echo"], "对端注册一个可寻址贡献（echo）");
     let outcome = handle
         .invoke("echo", InvokeContext::default(), json!({"text": "hi"}))
         .await;
@@ -179,8 +177,8 @@ async fn start_plugins_best_effort_on_single_failure() {
         ok_handle
             .contributions()
             .iter()
-            .any(|c| matches!(c, Contribution::Tool(_))),
-        "成功插件的工具贡献应可用"
+            .any(|c| c.target_name() == Some("echo")),
+        "成功插件的贡献应可用"
     );
 
     started.shutdown(Duration::from_secs(2)).await;

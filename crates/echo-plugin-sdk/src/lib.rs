@@ -62,124 +62,13 @@ mod tests;
 
 pub use async_trait::async_trait;
 pub use echo_plugin_api;
-pub use echo_plugin_api::{
-    capabilities, Contribution, InvokeContext, InvokeOutcome, ToolContribution,
-};
+pub use echo_plugin_api::{capabilities, Contribution, InvokeContext, InvokeOutcome};
 pub use frame::MAX_FRAME_BYTES;
 pub use serde_json;
 pub use serve::{
     serve_io, serve_io_with, serve_stdio, serve_stdio_with, HostCallError, HostClient,
     DEFAULT_HOST_CALL_TIMEOUT,
 };
-
-/// 实例插件（P1.2，2026-10 实例插件化）：[`PluginHandler`] 的插件实例
-/// 形态——注册 `Contribution::PluginInstance`（宿主据此把 `RemoteInstance` 注册进
-/// `InstanceRegistry`），`Invoke("<name>:<op>")` 寻址到 [`InstancePlugin::invoke_op`]
-/// 的 method 路由（实例名前缀由 SDK 剥离）。作者实现本 trait 后仍交给
-/// [`serve_stdio`]——协议握手 / 帧 / 回呼全部由 SDK 承担。
-#[async_trait::async_trait]
-pub trait InstancePlugin: Send + Sync + 'static {
-    /// 接收宿主下发配置（`Hello.config`），先于 [`instance`](Self::instance)
-    /// 调用；`Err` = 拒绝启动。缺省忽略。
-    async fn configure(&self, _config: Value) -> Result<(), String> {
-        Ok(())
-    }
-
-    /// 插件实例贡献（`Contribution::PluginInstance`；实例名 / 平台 / 能力位 / UI 描述符）。
-    /// 在 [`configure`](Self::configure) 之后调用。
-    fn instance(&self) -> echo_plugin_api::InstanceContribution;
-
-    /// 处理一次插件实例方法调用（`Invoke("<name>:<op>")` 的 `op` 部分；
-    /// SDK 已剥离实例名前缀）。
-    ///
-    /// 生命周期 `start` / `stop`、出站 `send_text` / `send_media`、目录
-    /// `get_groups` / `get_friends`、管理 `custom`（`{method, payload}`）
-    /// 都走本方法路由；未知方法返回 `Error{code:"unknown_contribution"}`。
-    async fn invoke_op(&self, op: &str, payload: Value) -> InvokeOutcome;
-
-    /// 握手完成后交付宿主客户端（调用一次）。插件自存（如
-    /// `OnceLock<HostClient>`），后续 `submit_input` / `report_state`
-    /// 等回呼经它发起（见 `document/design/instance-plugin.md` §插件动作 表）。
-    async fn on_ready(&self, _host: HostClient) {}
-
-    /// `Drain` 排空通知（随后进程退出）；缺省空实现。
-    async fn on_drain(&self, _deadline_ms: u64) {}
-}
-
-/// 把 [`InstancePlugin`] 包装成 [`PluginHandler`]：注册单个
-/// `Contribution::PluginInstance`，剥离 `"<name>:"` 前缀后路由到
-/// [`InstancePlugin::invoke_op`]。通常经 [`serve_instance_stdio`] 使用。
-pub struct InstanceHandler<A: InstancePlugin> {
-    plugin: A,
-    /// 实例名：注册时（`configure` 之后）锁定，寻址按它匹配。
-    name: std::sync::OnceLock<String>,
-}
-
-impl<A: InstancePlugin> InstanceHandler<A> {
-    /// 包装实例插件（实例名在注册时取自 [`InstancePlugin::instance`]）。
-    pub fn new(plugin: A) -> Self {
-        Self {
-            plugin,
-            name: std::sync::OnceLock::new(),
-        }
-    }
-
-    /// 取内层插件。
-    pub fn inner(&self) -> &A {
-        &self.plugin
-    }
-}
-
-#[async_trait::async_trait]
-impl<A: InstancePlugin> PluginHandler for InstanceHandler<A> {
-    async fn configure(&self, config: Value) -> Result<(), String> {
-        self.plugin.configure(config).await
-    }
-
-    fn contributions(&self) -> Vec<Contribution> {
-        let instance = self.plugin.instance();
-        let _ = self.name.set(instance.name.clone());
-        vec![Contribution::PluginInstance(instance)]
-    }
-
-    async fn invoke(&self, req: InvokeRequest) -> InvokeOutcome {
-        match serve::split_instance_op(&req.contribution) {
-            Some((name, op)) if self.name.get() == Some(&name) => {
-                self.plugin.invoke_op(&op, req.payload).await
-            }
-            _ => InvokeOutcome::Error {
-                code: "unknown_contribution".to_string(),
-                message: format!("unknown adapter contribution: {}", req.contribution),
-            },
-        }
-    }
-
-    async fn on_ready(&self, host: HostClient) {
-        self.plugin.on_ready(host).await;
-    }
-
-    async fn on_drain(&self, deadline_ms: u64) {
-        self.plugin.on_drain(deadline_ms).await;
-    }
-}
-
-/// 以 stdio 服务一个实例插件（= `serve_stdio_with(InstanceHandler::new(plugin), …)`）。
-///
-/// `Welcome.capabilities` 自动追加 `"adapter"`（能力位双方声明才可用；
-/// 宿主据此识别实例插件）。
-pub async fn serve_instance_stdio(plugin: impl InstancePlugin) -> std::io::Result<()> {
-    let mut options = ServeOptions::default();
-    if !options
-        .capabilities
-        .iter()
-        .any(|c| c == capabilities::PLUGIN_INSTANCE)
-    {
-        options
-            .capabilities
-            .push(capabilities::PLUGIN_INSTANCE.to_string());
-    }
-    serve_stdio_with(InstanceHandler::new(plugin), options).await
-}
 
 use serde_json::Value;
 
@@ -260,7 +149,7 @@ impl Default for ServeOptions {
             // 空 = 回显宿主 Hello 的 plugin_id（见字段文档）。
             plugin_id: String::new(),
             capabilities: vec![
-                capabilities::TOOLS.to_string(),
+                capabilities::SERVICES.to_string(),
                 capabilities::CANCEL.to_string(),
                 capabilities::HOST_CALL.to_string(),
             ],

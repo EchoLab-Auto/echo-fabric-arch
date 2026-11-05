@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use echo_plugin_api::{
     Contribution, Drain, Hello, HostCall, HostCallOutcome, HostCallResult, HostToPlugin, Invoke,
-    InvokeContext, InvokeOutcome, PluginToHost, ToolContribution, PROTOCOL_NAME, PROTOCOL_VERSION,
+    InvokeContext, InvokeOutcome, PluginToHost, PROTOCOL_NAME, PROTOCOL_VERSION,
 };
 use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
@@ -40,21 +40,20 @@ impl TestHandler {
 #[async_trait::async_trait]
 impl PluginHandler for TestHandler {
     fn contributions(&self) -> Vec<Contribution> {
-        vec![Contribution::Tool(ToolContribution {
+        vec![Contribution::Custom {
+            kind: "host_defined".to_string(),
             name: "echo".to_string(),
-            description: "回显 text（SDK 测试）".to_string(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "text": {"type": "string"},
-                    "delay_ms": {"type": "integer"},
+            payload: json!({
+                "description": "回显 text（SDK 测试）",
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "text": {"type": "string"},
+                        "delay_ms": {"type": "integer"},
+                    },
                 },
             }),
-            category: "plugin".to_string(),
-            timeout_hint_secs: None,
-            package: Some("echo-plugin-sdk.tests".to_string()),
-            visible_reply: false,
-        })]
+        }]
     }
 
     async fn invoke(&self, req: InvokeRequest) -> InvokeOutcome {
@@ -171,6 +170,17 @@ async fn expect_ok_result(session: &mut Session) -> (String, String) {
         other => panic!("expected InvokeResult, got {other:?}"),
     }
 }
+/// 期待一条 `Error{code}` 结果，返回该 code。
+async fn expect_error_code(session: &mut Session) -> String {
+    match recv(session).await {
+        PluginToHost::InvokeResult(result) => match result.outcome {
+            InvokeOutcome::Error { code, .. } => code,
+            other => panic!("expected error outcome, got {other:?}"),
+        },
+        other => panic!("expected InvokeResult, got {other:?}"),
+    }
+}
+
 
 /// Hello 握手产生 Welcome + Register + Ready（顺序与字段）。
 #[tokio::test]
@@ -186,7 +196,7 @@ async fn hello_handshake_produces_welcome_register_ready() {
             assert_eq!(
                 welcome.capabilities,
                 vec![
-                    "tools".to_string(),
+                    "services".to_string(),
                     "cancel".to_string(),
                     "host_call".to_string()
                 ]
@@ -199,11 +209,16 @@ async fn hello_handshake_produces_welcome_register_ready() {
         PluginToHost::Register(register) => {
             assert_eq!(register.contributions.len(), 1);
             match &register.contributions[0] {
-                Contribution::Tool(tool) => {
-                    assert_eq!(tool.name, "echo");
-                    let properties = tool
-                        .parameters
-                        .get("properties")
+                Contribution::Custom {
+                    kind,
+                    name,
+                    payload,
+                } => {
+                    assert_eq!(kind, "host_defined");
+                    assert_eq!(name, "echo");
+                    let properties = payload
+                        .get("schema")
+                        .and_then(|value| value.get("properties"))
                         .and_then(|value| value.as_object())
                         .expect("schema should declare properties");
                     assert!(
@@ -211,7 +226,7 @@ async fn hello_handshake_produces_welcome_register_ready() {
                         "schema properties should be non-empty"
                     );
                 }
-                other => panic!("expected Tool contribution, got {other:?}"),
+                other => panic!("expected Custom contribution, got {other:?}"),
             }
         }
         other => panic!("expected Register, got {other:?}"),
@@ -379,14 +394,14 @@ async fn incompatible_version_is_rejected_with_failed() {
 async fn serve_options_override_id_and_capabilities() {
     let mut session = start_session_with(ServeOptions {
         plugin_id: "custom-plugin".to_string(),
-        capabilities: vec!["tools".to_string()],
+        capabilities: vec!["services".to_string()],
     });
     send(&mut session, hello(PROTOCOL_VERSION)).await;
 
     match recv(&mut session).await {
         PluginToHost::Welcome(welcome) => {
             assert_eq!(welcome.plugin_id, "custom-plugin");
-            assert_eq!(welcome.capabilities, vec!["tools".to_string()]);
+            assert_eq!(welcome.capabilities, vec!["services".to_string()]);
         }
         other => panic!("expected Welcome, got {other:?}"),
     }
@@ -442,15 +457,11 @@ impl HostCallHandler {
 #[async_trait::async_trait]
 impl PluginHandler for HostCallHandler {
     fn contributions(&self) -> Vec<Contribution> {
-        vec![Contribution::Tool(ToolContribution {
+        vec![Contribution::Custom {
+            kind: "host_defined".to_string(),
             name: "call_host".to_string(),
-            description: "发起 HostCall（SDK 测试）".to_string(),
-            parameters: json!({"type": "object"}),
-            category: "plugin".to_string(),
-            timeout_hint_secs: None,
-            package: Some("echo-plugin-sdk.tests".to_string()),
-            visible_reply: false,
-        })]
+            payload: json!({"description": "发起 HostCall（SDK 测试）"}),
+        }]
     }
 
     async fn invoke(&self, req: InvokeRequest) -> InvokeOutcome {
@@ -672,105 +683,81 @@ async fn host_call_after_disconnect_is_closed() {
     );
 }
 
-// ---- 实例插件（P1.2）：`"<name>:<op>"` 寻址剥离前缀后路由到 invoke_op ----
+// ---- 自定义贡献的寻址：宿主用 `kind` 分派，`name` 参与 Invoke ----
 
-struct TestInstance;
+/// 领域宿主本来就该这么做：插件注册 `Contribution::Custom`（`kind` 是宿主
+/// 自己的词汇），宿主持有 `kind` 的语义，框架只负责搬运与寻址。
+#[tokio::test]
+async fn custom_contribution_is_addressable_by_name() {
+    struct CustomPlugin;
 
-#[async_trait::async_trait]
-impl crate::InstancePlugin for TestInstance {
-    fn instance(&self) -> echo_plugin_api::InstanceContribution {
-        echo_plugin_api::InstanceContribution {
-            name: "qq-test".to_string(),
-            platform: "qq".to_string(),
-            display_name: "QQ test".to_string(),
-            capabilities: echo_plugin_api::InstanceCapabilities {
-                send_text: true,
-                ..Default::default()
-            },
-            config_schema: None,
-            ui: None,
-            session_labels: None,
-            tools: Vec::new(),
+    #[async_trait::async_trait]
+    impl PluginHandler for CustomPlugin {
+        fn contributions(&self) -> Vec<Contribution> {
+            vec![Contribution::Custom {
+                kind: "handler".to_string(),
+                name: "do_it".to_string(),
+                payload: json!({"some": "host-defined shape"}),
+            }]
+        }
+
+        async fn invoke(&self, req: InvokeRequest) -> InvokeOutcome {
+            InvokeOutcome::ok(format!("handled:{}", req.contribution))
         }
     }
 
-    async fn invoke_op(&self, op: &str, payload: serde_json::Value) -> InvokeOutcome {
-        match op {
-            "send_text" => InvokeOutcome::ok(format!(
-                "sent:{}",
-                payload["text"].as_str().unwrap_or_default()
-            )),
-            other => InvokeOutcome::Error {
-                code: "unknown_contribution".to_string(),
-                message: format!("unknown op {other}"),
-            },
-        }
-    }
-}
-
-fn start_instance_session() -> Session {
     let (server, client) = tokio::io::duplex(64 * 1024);
     let (reader, writer) = tokio::io::split(server);
-    let handler = crate::InstanceHandler::new(TestInstance);
     let task = tokio::spawn(serve_io_with(
-        handler,
+        CustomPlugin,
         ServeOptions::default(),
         reader,
         writer,
     ));
-    Session {
+    let mut session = Session {
         client,
         drained: Arc::new(AtomicBool::new(false)),
         task,
-    }
-}
+    };
 
-fn instance_invoke(call_id: &str, contribution: &str) -> HostToPlugin {
-    HostToPlugin::Invoke(Invoke {
-        call_id: call_id.to_string(),
-        contribution: contribution.to_string(),
-        ctx: InvokeContext::default(),
-        payload: json!({"text": "hi"}),
-    })
-}
-
-async fn expect_error_code(session: &mut Session) -> String {
-    match recv(session).await {
-        PluginToHost::InvokeResult(result) => match result.outcome {
-            InvokeOutcome::Error { code, .. } => code,
-            other => panic!("expected error outcome, got {other:?}"),
-        },
-        other => panic!("expected InvokeResult, got {other:?}"),
-    }
-}
-
-#[tokio::test]
-async fn instance_op_routes_to_invoke_op_with_prefix_stripped() {
-    let mut session = start_instance_session();
     send(&mut session, hello(PROTOCOL_VERSION)).await;
     assert!(matches!(recv(&mut session).await, PluginToHost::Welcome(_)));
     match recv(&mut session).await {
-        PluginToHost::Register(reg) => assert!(matches!(
-            reg.contributions.as_slice(),
-            [Contribution::PluginInstance(a)] if a.name == "qq-test" && a.capabilities.send_text
-        )),
+        PluginToHost::Register(reg) => {
+            assert_eq!(reg.contributions.len(), 1);
+            assert_eq!(reg.contributions[0].custom_kind(), Some("handler"));
+            assert_eq!(reg.contributions[0].target_name(), Some("do_it"));
+        }
         other => panic!("expected Register, got {other:?}"),
     }
     assert_eq!(recv(&mut session).await, PluginToHost::Ready);
 
-    send(&mut session, instance_invoke("c1", "qq-test:send_text")).await;
+    send(
+        &mut session,
+        HostToPlugin::Invoke(Invoke {
+            call_id: "c1".to_string(),
+            contribution: "do_it".to_string(),
+            ctx: InvokeContext::default(),
+            payload: json!({}),
+        }),
+    )
+    .await;
     assert_eq!(
         expect_ok_result(&mut session).await,
-        ("c1".to_string(), "sent:hi".to_string())
+        ("c1".to_string(), "handled:do_it".to_string())
     );
 
-    // 实例名不匹配 / 未知 op：均为可读错误。
-    send(&mut session, instance_invoke("c2", "other:send_text")).await;
-    assert_eq!(
-        expect_error_code(&mut session).await,
-        "unknown_contribution"
-    );
-    send(&mut session, instance_invoke("c3", "qq-test:nope")).await;
+    // 未注册的名字 → 可读错误（不是静默转发）。
+    send(
+        &mut session,
+        HostToPlugin::Invoke(Invoke {
+            call_id: "c2".to_string(),
+            contribution: "not_registered".to_string(),
+            ctx: InvokeContext::default(),
+            payload: json!({}),
+        }),
+    )
+    .await;
     assert_eq!(
         expect_error_code(&mut session).await,
         "unknown_contribution"

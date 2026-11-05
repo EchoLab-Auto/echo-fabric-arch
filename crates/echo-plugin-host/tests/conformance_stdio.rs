@@ -133,7 +133,7 @@ async fn handshake_direct(conn: &dyn PluginConnection) {
 
 /// 1. 握手 + 注册：Ready；贡献 = echo 工具。
 #[tokio::test]
-async fn a_handshake_registers_echo_tool() {
+async fn a_handshake_registers_echo_contribution() {
     let handle = start_plugin(peer()).await;
     assert_eq!(handle.state(), PluginState::Ready);
 
@@ -143,13 +143,21 @@ async fn a_handshake_registers_echo_tool() {
         1,
         "expected exactly one contribution: {contributions:?}"
     );
+    // 贡献的分类是**对端（宿主）自己的词汇**，协议只透传——所以断言的是
+    // "它被原样搬过来"，而不是某个具体枚举变体。
     match &contributions[0] {
-        Contribution::Tool(tool) => {
-            assert_eq!(tool.name, "echo");
-            assert_eq!(tool.package.as_deref(), Some("echo-plugin-host.test-peer"));
+        Contribution::Custom {
+            kind,
+            name,
+            payload,
+        } => {
+            assert_eq!(kind, "host_defined");
+            assert_eq!(name, "echo");
+            assert_eq!(payload["description"], "回显 payload（stdio 测试插件）");
         }
-        other => panic!("expected Tool(echo), got {other:?}"),
+        other => panic!("expected Custom(echo), got {other:?}"),
     }
+    assert_eq!(contributions[0].target_name(), Some("echo"));
 }
 
 /// 2. invoke 往返：文本回显；payload 无 `text` 键时回显整个 payload。

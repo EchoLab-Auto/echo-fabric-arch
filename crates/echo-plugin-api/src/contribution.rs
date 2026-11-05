@@ -1,4 +1,27 @@
-//! 贡献类型：插件向宿主注册的能力（工具 / 技能 / 服务 / 事件订阅）。
+//! 贡献类型：插件向宿主注册的能力。
+//!
+//! # 只有与领域无关的形状
+//!
+//! 这里定义的是**协议表面**——插件与宿主之间唯一的共享词汇。所以每个变体都
+//! 必须回答一个问题：**换一个应用还成立吗？**
+//!
+//! | 变体 | 形状 | 通用 |
+//! |---|---|---|
+//! | [`Service`](Contribution::Service) | 键 + 版本 | ✅ 服务注册 |
+//! | [`Events`](Contribution::Events) | 事件名清单 | ✅ 订阅 |
+//! | [`Command`](Contribution::Command) | 名字 + 说明 | ✅ "这类调用归我处理" |
+//! | [`Text`](Contribution::Text) | 键 + 标题 + 顺序 | ✅ 有序文本块 |
+//! | [`Custom`](Contribution::Custom) | 宿主自定义分类 + 载荷 | ✅ **逃生口** |
+//!
+//! 曾经还有三个变体是**领域分类**（面向模型的工具声明、技能目录、聊天平台插件
+//! 实例与能力位）——从 EchoAgentCore 带过来的。2026-11 审计确认它们**零真实
+//! 使用者**（连 EchoAgentCore 自己都改用本仓之外的副本），已删除，由
+//! [`Custom`](Contribution::Custom) 承接：宿主自带分类词汇，框架只搬 `kind`
+//! 字符串与 `payload`，不认识其中任何含义。
+//!
+//! 这条边界的收益是可验证的：删掉它们之后，框架仓的领域词门禁可以对**全部**
+//! crate 生效（见 `framework-gates/tests/domain_agnostic.rs`），而不是把协议 crate
+//! 长期排除在外、任其继续长业务类型。
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -7,100 +30,70 @@ use serde_json::Value;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Contribution {
-    Tool(ToolContribution),
-    Skill(SkillContribution),
+    /// 以稳定键注册的服务（供 `Ctx` 服务定位消费）。
     Service(ServiceContribution),
+    /// 事件订阅：插件希望收到的宿主事件名列表。
     Events(EventContribution),
-    /// 插件实例贡献（P1，2026-10 实例插件化）：平台插件作为插件交付。
-    /// 宿主把 `RemoteInstance`（`echo_defs::plugin_instance::PluginInstance` 的远程实现）
-    /// 注册进 `InstanceRegistry`；动作经 `Invoke("<name>:<op>")`，入站经
-    /// `HostCall` → 宿主服务 `core_api`（见 `document/design/instance-plugin.md`）。
-    ///
-    /// **wire tag 保持 `adapter`**：这是宿主与插件之间唯一的契约字符串，
-    /// 两侧独立升级（新 Core + 已部署旧插件、旧 Core + 新插件）都依赖它不变。
-    /// Rust 侧名字去掉 adapter 是内部可读性，线上一字节不动；`plugin_instance`
-    /// 作为别名接受，未来若要换 tag 有过渡窗口。
-    #[serde(rename = "adapter", alias = "plugin_instance")]
-    PluginInstance(InstanceContribution),
-    /// **命令处理**贡献（v0.8.0）：插件声明"这些命令我来处理"。
-    ///
-    /// 宿主原本只能靠一个封闭 `enum` + 巨型 `match` 分发命令（EchoAgent 里
-    /// 是 66 个变体 / 2,068 行）。有了它，"某个命令域归某个插件"就从**硬编码
-    /// 分支**变成**注册关系**——插件不在，命令自然无人处理，宿主回明确错误。
-    ///
-    /// 框架只搬 `name`：命令名是**宿主词汇**（如 `RequestWorkspaceSessions`），
-    /// 框架不认识也不解释。
+    /// 命令处理：插件声明"这类调用归我处理"。
     Command(CommandContribution),
-    /// **提示词块**贡献（v0.8.0）：插件声明要向宿主的"文本装配"过程贡献一段
-    /// 文本（带顺序与标题）。
-    ///
-    /// 宿主原本只能给装配函数加参数（"收集上下文段落"这类函数每来一个要注入
-    /// 内容的插件就改一次签名）。有了它，装配变成"收集已注册的块 + 排序"，
-    /// 与插件数量解耦。
-    ///
-    /// 框架只搬 `key`（槽内唯一），`label` / `text` 由 [`PluginTextBlock`]
-    /// 在运行期给出——**框架不知道"提示词"是什么**，它只知道"有序文本块"。
-    ///
-    /// [`PluginTextBlock`]: echo_plugin::PluginTextBlock
+    /// 有序文本块：插件向宿主的"文本装配"过程贡献一段文本。
     Text(TextBlockContribution),
+    /// **宿主自定义的贡献**——领域词汇的唯一入口。
+    ///
+    /// 领域宿主（把插件当"工具提供者""消息通道""数据源"用的那种）应该用这个
+    /// 变体自带分类，而不是让框架为它新增一个 enum 变体。框架只搬运，不解释：
+    ///
+    /// - `kind` 是宿主词汇（`"report_generator"` / `"chat_adapter"` / 任何字符串）；
+    /// - `payload` 的形状由宿主与插件自行约定，框架不做 schema 校验；
+    /// - `name` 参与 `Invoke` 寻址（空 = 不参与，宿主自己从 payload 里取）。
+    ///
+    /// 与 `ServiceContribution::kind` 同样的取舍：载荷字段不能叫 `kind`——枚举的
+    /// 标签字段已经占了那个名字（`{"kind":"custom", …}`），重复键会让整帧解析
+    /// 失败。所以线上名是 `custom_kind`。
+    Custom {
+        /// 宿主自定义的分类（框架不解释）。
+        #[serde(rename = "custom_kind")]
+        kind: String,
+        /// `Invoke` 的寻址名；空 = 不参与寻址。
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        name: String,
+        /// 宿主与插件约定的载荷（框架不解释、不校验）。
+        #[serde(default)]
+        payload: Value,
+    },
 }
 
 impl Contribution {
     /// `Invoke` 的寻址目标；`None` = 这条贡献不是"被调用的"。
     ///
-    /// 三种寻址形态：按 `name`（两处）、按 `key`（服务）、按实例名。哪些参与
-    /// 寻址是**协议的知识**——放在变体定义旁边，SDK 与宿主都不必各自 match
-    /// 一遍具体变体（那会让它们也被迫认识 `Tool` / `Skill` 这些词）。
+    /// 哪些贡献参与寻址是**协议的知识**——放在变体定义旁边，宿主与 SDK 都不必
+    /// 各自 match 一遍具体变体（那会让它们也被迫认识自己不关心的分类）。
     pub fn target_name(&self) -> Option<&str> {
         match self {
-            Contribution::Tool(tool) => Some(&tool.name),
-            Contribution::Skill(skill) => Some(&skill.name),
             Contribution::Service(service) => Some(&service.key),
-            Contribution::Events(_) => None,
-            // 插件实例的寻址名 = 实例名（宿主按 `Invoke("<name>:<op>")` 寻址）。
-            Contribution::PluginInstance(instance) => Some(&instance.name),
-            // 命令处理：宿主按 `Invoke("<command>")` 下发。
             Contribution::Command(command) => Some(&command.name),
             // 文本块是"宿主来取"而不是"宿主来调"（拉模式），不参与寻址。
             Contribution::Text(_) => None,
+            Contribution::Events(_) => None,
+            Contribution::Custom { name, .. } => {
+                if name.is_empty() {
+                    None
+                } else {
+                    Some(name)
+                }
+            }
         }
     }
-}
 
-fn default_category() -> String {
-    "plugin".to_string()
-}
-
-/// 工具贡献（遗留领域分类；参数用 JSON Schema 描述）。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ToolContribution {
-    pub name: String,
-    pub description: String,
-    /// 参数 JSON Schema（与注册进 ToolRegistry 的完全一致）。
-    #[serde(default)]
-    pub parameters: Value,
-    /// UI 分组分类（缺省 `"plugin"`）。
-    #[serde(default = "default_category")]
-    pub category: String,
-    /// 工具自声明超时上限（秒）；宿主守卫取其与配置 base 的较大者 + 宽限。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub timeout_hint_secs: Option<u64>,
-    /// 所属包 id（宿主按包批量勾选用；如 `vendor.suite.feature`）。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub package: Option<String>,
-    /// 成功调用是否即产生平台可见输出（宿主据此抑制「临时等待回复」）。
-    #[serde(default)]
-    pub visible_reply: bool,
-}
-
-/// 技能贡献（SKILL.md 目录或内联描述）。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct SkillContribution {
-    pub name: String,
-    pub description: String,
-    /// 技能目录（含 SKILL.md）；None = 由插件自行提供技能内容（后续扩展）。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub path: Option<String>,
+    /// 宿主自定义分类（仅 [`Custom`](Contribution::Custom) 有；其它返回 `None`）。
+    ///
+    /// 宿主用它把自定义贡献分派给自己的注册表，不需要 match 其它变体。
+    pub fn custom_kind(&self) -> Option<&str> {
+        match self {
+            Contribution::Custom { kind, .. } => Some(kind),
+            _ => None,
+        }
+    }
 }
 
 /// 服务贡献：以稳定键注册的服务（供 Ctx 服务定位消费）。
@@ -134,7 +127,7 @@ pub struct ServiceContribution {
 }
 
 /// 事件订阅：插件希望收到的宿主事件名列表（宿主按名单路由 Event 消息）。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct EventContribution {
     #[serde(default)]
     pub subscribe: Vec<String>,
@@ -169,59 +162,4 @@ pub struct TextBlockContribution {
     /// 排序权重（小在前；等值按注册序）。
     #[serde(default)]
     pub order: i32,
-}
-
-/// 插件实例贡献（P1，2026-10 实例插件化）：宿主把 `RemoteInstance` 注册进
-/// `InstanceRegistry`；`capabilities` 声明该插件实例支持的管理动作位（宿主
-/// 只调用声明过的方法，未声明的调用拒绝为 `unsupported`）。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct InstanceContribution {
-    /// 实例名（= Invoke 前缀；全局唯一）。
-    pub name: String,
-    /// 平台标识（会话作用域 / 显示；如 `"qq"`）。
-    pub platform: String,
-    /// 展示名（如 `"QQ / OneBot"`）。
-    pub display_name: String,
-    /// 能力位（`InstanceCapabilities`；宿主 fail-closed 校验）。
-    #[serde(default)]
-    pub capabilities: InstanceCapabilities,
-    /// 插件配置 JSON Schema（校验 / 未来面板表单，可选）。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub config_schema: Option<Value>,
-    /// UI 描述符（插件声明的插件实例管理界面；Panel 经通用渲染器呈现；
-    /// 结构见 `document/design/instance-plugin.md` §Panel UI 解耦，可选）。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ui: Option<Value>,
-    /// 会话标签（`SessionSwitcher` 等平台分组显示；如 `{"dm":"私聊","group":"群"}`，可选）。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session_labels: Option<Value>,
-    /// 该插件实例贡献给模型的工具（**平台语义在此声明，宿主不认识它们**）。
-    ///
-    /// 每个工具名同时是 `Invoke("<adapter>:<name>")` 的 op 名；宿主负责跨实例
-    /// 合并、多实例时注入 `account` 寻址参数、把调用透传回来。
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub tools: Vec<ToolContribution>,
-}
-
-/// 插件实例能力位（缺省全 false——宿主 fail-closed，未声明的调用拒绝）。
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct InstanceCapabilities {
-    /// 出站文本（`send_text`）。
-    #[serde(default)]
-    pub send_text: bool,
-    /// 出站媒体（`send_media`）。
-    #[serde(default)]
-    pub send_media: bool,
-    /// 群目录（`get_groups`）。
-    #[serde(default)]
-    pub groups: bool,
-    /// 好友目录（`get_friends`）。
-    #[serde(default)]
-    pub friends: bool,
-    /// 门控管理（`custom` 的 `*_gate_*` / `update_*list` / `set_owner` 等）。
-    #[serde(default)]
-    pub gating: bool,
-    /// 登录管理（`login_status` / `login_qrcode` 等）。
-    #[serde(default)]
-    pub login: bool,
 }

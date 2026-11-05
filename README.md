@@ -59,7 +59,7 @@ cargo build -p minimal-plugin && cargo run -p minimal-host
 ## 写一个插件
 
 ```toml
-echo-plugin-sdk = { git = "https://github.com/EchoLab-Auto/echo-fabric-arch", tag = "v0.13.0" }
+echo-plugin-sdk = { git = "https://github.com/EchoLab-Auto/echo-fabric-arch", tag = "v0.14.0" }
 ```
 
 ```rust
@@ -150,11 +150,12 @@ crate 清单：`echo-context`（内核）、`echo-plugin`（生命周期）、`e
 什么时候**不该**用它：插件集合编译期固定、永不变动（一个 `enum` 分派就够）；只想
 要依赖注入（单拿 `echo-context`）；要求插件与宿主共享复杂 Rust 类型（做不到）。
 
-**已知缺口**：协议表面仍带 `Tool` / `Skill` / `PluginInstance` 三个领域分类。
-2026-11 审计确认它们**零真实使用者**（连催生本仓的 EchoAgentCore 也不用了），
-保留的唯一理由是线上协议已发布、删变体要单独走兼容窗口。同批已删掉三个零使用
-的聊天平台类型，并把这两个 crate 纳入领域词门禁（白名单制，见
-[边界与纪律](./document/boundaries.md)）。
+**协议零领域词汇**：贡献分类只剩与业务无关的形状（服务 / 事件 / 命令 /
+文本块），领域宿主用 `Contribution::Custom { kind, payload }` 自带分类——框架
+只搬运，不认识其中含义。2026-11 审计删掉了三个零使用的领域变体与三个聊天平台
+类型，并把 `echo-plugin-api` / `echo-plugin-sdk` 一起纳入领域词门禁（此前它们被
+排除，正是那份豁免让业务类型长了进来）。详见
+[边界与纪律](./document/boundaries.md)。
 
 ## License
 
