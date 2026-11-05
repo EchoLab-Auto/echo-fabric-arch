@@ -509,7 +509,23 @@ impl PluginRegistry {
         let owner = self.enter_owner(id);
         let result = plugin.mount(&plugin_ctx);
         drop(owner);
-        let disposers = result?;
+        let disposers = match result {
+            Ok(disposers) => {
+                self.set_plugin_error_cleared(id);
+                disposers
+            }
+            Err(e) => {
+                // 挂载失败必须**可观测**：只把它放进 `mount_all` 的返回值里，
+                // 事后就没人看得见了——面板只能显示"没挂载"，操作者得翻日志
+                // 才知道为什么。记到 descriptor 的 `error` 上，快照/面板就能
+                // 直接回答"它为什么没起来"。
+                //
+                // 与 `pending`（缺依赖，可恢复）不同：这里是插件自己坏了，
+                // 语义见 document/lifecycle.md。
+                self.set_plugin_error(id, e.to_string());
+                return Err(e);
+            }
+        };
         // 逆序撤销（后注册的先撤）——与嵌套注册的直觉一致，也让"外层资源
         // 在里层资源之后消失"这条约束自然成立。
         let mut active = self
@@ -524,7 +540,6 @@ impl PluginRegistry {
             serde_json::json!({ "id": id, "depth": self.depth() }),
         );
         self.clear_pending(id);
-        self.set_plugin_error_cleared(id);
         // 订阅兴趣集随之变化——热路径闸门由注册表自己维护，宿主不必记得
         // （忘了只会让热路径多付序列化代价，不会丢事件）。
         self.refresh_event_interest();

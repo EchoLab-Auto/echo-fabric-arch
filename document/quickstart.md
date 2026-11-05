@@ -19,7 +19,7 @@ group: 实践
 
 ```toml
 [dependencies]
-echo-plugin-sdk = { git = "https://github.com/EchoLab-Auto/echo-fabric-arch", tag = "v0.11.2" }
+echo-plugin-sdk = { git = "https://github.com/EchoLab-Auto/echo-fabric-arch", tag = "v0.12.0" }
 tokio = { version = "1", features = ["full"] }
 serde_json = "1"
 ```
@@ -123,6 +123,41 @@ registry.unmount("demo.counter")?;   // Ctx 里的键随之消失
 ```
 
 这段的要点是**挂载闭包返回 `Vec<Disposer>`**：它做的每件事都必须能撤销。
+
+## 三·五、让插件反过来调宿主
+
+大多数真实插件要读宿主的东西（配置、数据库、令牌）。宿主实现
+`AsyncHostService` 并注册，插件用 `HostClient` 调：
+
+```rust
+// 宿主侧（必须在 supervisor.start() 之前注册）
+use echo_plugin_host::async_trait;
+use echo_plugin_host::host_service::{AsyncHostService, CallContext};
+
+struct Storage;
+
+#[async_trait]
+impl AsyncHostService for Storage {
+    async fn call(&self, cx: CallContext, method: &str, payload: Value)
+        -> Result<Value, (String, String)>
+    {
+        // cx.caller = 发起本次回呼的插件 id（supervisor 填，插件无法伪造）
+        Ok(json!({ "caller": cx.caller }))
+    }
+}
+
+supervisor.host_services().register_async("my.storage", Arc::new(Storage));
+```
+
+```rust
+// 插件侧：on_ready 存句柄，之后随便调（别在 on_ready 里直接 await，会自锁）
+async fn on_ready(&self, host: HostClient) { *self.host.lock().unwrap() = Some(host); }
+// …在 invoke 里…
+let out = self.host.lock().unwrap().as_ref().unwrap()
+    .call("my.storage", "load", json!({ "key": "k" })).await;
+```
+
+细节（两种实现、错误码、坑）见[宿主服务与回呼](./host-service.md)。
 
 ## 四、声明依赖与订阅事件（可选）
 

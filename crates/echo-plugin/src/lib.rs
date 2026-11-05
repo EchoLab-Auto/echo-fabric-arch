@@ -18,6 +18,7 @@ pub mod plugin;
 pub mod registry;
 mod runtime_state;
 pub mod scope;
+pub mod tree;
 
 pub use event::{EventSink, PluginEvent, ALL_EVENTS};
 pub use manifest::{PluginError, PluginManifest, PluginRuntime};
@@ -27,3 +28,4 @@ pub use plugin::{
 };
 pub use registry::{PluginDefinition, PluginDescriptor, PluginRegistry, ReconcileReport};
 pub use scope::PluginScope;
+pub use tree::{PluginTreeNode, PluginTreeSnapshot, TREE_SCHEMA_VERSION};

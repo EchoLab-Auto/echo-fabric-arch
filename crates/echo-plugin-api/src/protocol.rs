@@ -151,9 +151,15 @@ pub struct InvokeResult {
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum InvokeOutcome {
     Ok {
+        /// **遗留字段**（agent 文本/多模态场景）。新代码请用
+        /// [`InvokeOutcome::data`]，只填 `result`。
+        ///
+        /// 保留是为了旧插件仍能解码：删字段会破坏线上兼容，而去业务化
+        /// （把一个泛化的 RPC 结果收窄成单一载荷）需要独立的兼容窗口。
         #[serde(default)]
         text: String,
-        /// 多模态产物（图片 URL / data URI）；与内置工具 `execute_rich` 同口径。
+        /// **遗留字段**（图片 URL / data URI）。同上：新代码请用
+        /// [`InvokeOutcome::data`]。
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         images: Vec<String>,
         /// 结构化结果（W1.1，2026-10）：插件实例 op（`custom`）等场景的返回载荷经
@@ -170,12 +176,28 @@ pub enum InvokeOutcome {
 }
 
 impl InvokeOutcome {
-    /// `Ok` 便捷构造：无图片、无结构化结果（旧形态的等价写法）。
+    /// `Ok` 便捷构造：只填遗留的 `text`（无图片、无结构化结果）。
+    ///
+    /// 新代码优先用 [`data`](Self::data)——语义化结果（状态、目录、文档）
+    /// 走 `result` 比塞进字符串更干净，也不必假装它是"文本"。
     pub fn ok(text: impl Into<String>) -> Self {
         Self::Ok {
             text: text.into(),
             images: Vec::new(),
             result: Value::Null,
+        }
+    }
+
+    /// `Ok` 便捷构造：只填结构化结果 `result`（`text` / `images` 留空）。
+    ///
+    /// 这是**与领域无关**的返回形状：宿主拿到 `Value` 后自己解释，框架不预设
+    /// 它是一段文本、一张图还是一份状态。插件声明服务、宿主调用它、拿回一份
+    /// JSON——就这样。
+    pub fn data(result: Value) -> Self {
+        Self::Ok {
+            text: String::new(),
+            images: Vec::new(),
+            result,
         }
     }
 }

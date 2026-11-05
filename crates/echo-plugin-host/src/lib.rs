@@ -26,7 +26,10 @@ pub mod supervisor;
 pub mod transport;
 
 pub use bootstrap::{launch_specs, start_from_file, start_plugins, LaunchSpec, StartedPlugins};
-pub use host_service::{HostService, HostServiceRegistry};
+pub use host_service::{AsyncHostService, CallContext, HostService, HostServiceRegistry};
+/// 实现 [`AsyncHostService`] 需要 `#[async_trait]` 宏；这里re-export，
+/// 让宿主不必为此单独加一次依赖（与 `echo-plugin-sdk` 的做法一致）。
+pub use async_trait::async_trait;
 pub use inproc::{InprocIo, InprocPlugin, InprocTransport};
 pub use stdio::{StdioConnection, StdioTransport};
 pub use supervisor::{PluginHandle, PluginState, PluginSupervisor, RestartPolicy};

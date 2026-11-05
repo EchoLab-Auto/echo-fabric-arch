@@ -538,6 +538,65 @@ impl PluginHandle {
         self.shared.invoke(contribution, ctx, payload).await
     }
 
+    /// 反复 invoke 同一个贡献，直到谓词返回 `true` 或超时。
+    ///
+    /// 「握手完成」不等于「插件内部的服务真的起来了」：`state() == Ready` 只说明
+    /// 协议握手结束，而宿主常常还要等它把 HTTP 端口绑上、把数据加载完。这类
+    /// 就绪探测每个宿主都会写一遍（轮询 + 超时 + 判据），所以收在这里。
+    ///
+    /// 返回第一个满足 `predicate` 的 `result` 载荷；超时 / 插件进入
+    /// `Failed`·`Stopped` / 一直返回 `Error` 都返回 `None`。
+    ///
+    /// ```no_run
+    /// # use std::time::Duration;
+    /// # use serde_json::Value;
+    /// # async fn demo(handle: &echo_plugin_host::PluginHandle) {
+    /// let ready = handle
+    ///     .wait_until(
+    ///         "my.panel",
+    ///         Default::default(),
+    ///         Value::Null,
+    ///         Duration::from_secs(5),
+    ///         |r| r.get("serving").and_then(Value::as_bool) == Some(true),
+    ///     )
+    ///     .await;
+    /// assert!(ready.is_some(), "面板 5 秒内没说自己开始服务");
+    /// # }
+    /// ```
+    pub async fn wait_until<P>(
+        &self,
+        contribution: &str,
+        ctx: InvokeContext,
+        payload: Value,
+        timeout: Duration,
+        mut predicate: P,
+    ) -> Option<Value>
+    where
+        P: FnMut(&Value) -> bool,
+    {
+        const POLL: Duration = Duration::from_millis(200);
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            // 插件已经不可能再就绪了就别等满超时。
+            match self.state() {
+                PluginState::Failed(_) | PluginState::Stopped => return None,
+                _ => {}
+            }
+            if let InvokeOutcome::Ok { result, .. } = self
+                .invoke(contribution, ctx.clone(), payload.clone())
+                .await
+            {
+                if predicate(&result) {
+                    return Some(result);
+                }
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return None;
+            }
+            tokio::time::sleep(POLL.min(timeout)).await;
+        }
+    }
+
     /// 取消在途调用：在途表标记 + 尽力发送 `Cancel`（fire-and-forget）。
     ///
     /// 调用结果仍以插件回发的 `InvokeResult` 为准（`cancelled` 原样透传）；
@@ -1577,14 +1636,18 @@ fn dispatch(shared: &Arc<Shared>, source: &Arc<dyn PluginConnection>, msg: Plugi
             let shared = Arc::clone(shared);
             let source = Arc::clone(source);
             tokio::spawn(async move {
-                let outcome =
-                    match shared
-                        .host_services
-                        .call(&call.service, &call.method, call.payload)
-                    {
-                        Ok(result) => HostCallOutcome::Ok { result },
-                        Err((code, message)) => HostCallOutcome::Error { code, message },
-                    };
+                // 调用者身份**由这里填**：supervisor 知道自己为哪个 plugin_id
+                // 跑 serve 循环，而协议帧里没有这个字段 —— 插件无法把自己的
+                // 调用伪装成别的插件。宿主服务据此做来源授权与审计。
+                let caller = shared.plugin_id.clone();
+                let outcome = match shared
+                    .host_services
+                    .call(&caller, &call.service, &call.method, call.payload)
+                    .await
+                {
+                    Ok(result) => HostCallOutcome::Ok { result },
+                    Err((code, message)) => HostCallOutcome::Error { code, message },
+                };
                 if let Err(e) = source
                     .send(HostToPlugin::HostCallResult(HostCallResult {
                         call_id: call.call_id.clone(),

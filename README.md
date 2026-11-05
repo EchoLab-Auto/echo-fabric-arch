@@ -21,7 +21,7 @@
 
 ## 五个概念
 
-整个框架只有五个概念，其余都是它们的组合：
+整个框架只有五个概念（外加一个反方向的 `HostService`），其余都是它们的组合：
 
 | 概念 | 一句话 | crate |
 |---|---|---|
@@ -30,6 +30,7 @@
 | `EventBus` | 事件总线：`Observe` / `Waterfall` / `Parallel` / `Serial` 四种分发 | `echo-context` |
 | `Plugin` + `Registry` | 插件 = manifest + 一次挂载；注册表管 `register → mount → unmount` | `echo-plugin` |
 | `PluginScope` | 插件树：一层 = 一个 `Ctx` + 一个注册表，父链继承、子遮蔽父 | `echo-plugin` |
+| `HostService` | 插件反向调宿主：`HostCall` 到宿主注册的服务，带不可伪造的 `caller` | `echo-plugin-host` |
 
 读法：用 `Disposer` 保证可撤销，用 `Ctx` 表达依赖，用 `Scope` 表达归属，用
 `EventBus` 表达通知，用运输层决定这些发生在进程内还是进程外。
@@ -47,7 +48,7 @@
 ## 跑起来
 
 ```bash
-cargo test --workspace        # 222 项，全绿
+cargo test --workspace        # 236 项，全绿
 cargo build -p minimal-plugin && cargo run -p minimal-host
 # ✅ 全部断言通过——这套框架可以在非 EchoAgent 的宿主里独立使用
 ```
@@ -58,7 +59,7 @@ cargo build -p minimal-plugin && cargo run -p minimal-host
 ## 写一个插件
 
 ```toml
-echo-plugin-sdk = { git = "https://github.com/EchoLab-Auto/echo-fabric-arch", tag = "v0.11.2" }
+echo-plugin-sdk = { git = "https://github.com/EchoLab-Auto/echo-fabric-arch", tag = "v0.12.0" }
 ```
 
 ```rust
@@ -121,8 +122,9 @@ handle.drain(Duration::from_secs(5)).await?;     // 优雅退出
 
 ## 文档
 
-- [`document/`](./document/index.md) — 11 篇设计文档（ProDoc 文档图），从「为什么」
-  到「边界」；代码怎么摆看[组织一个应用](./document/structure.md)
+- [`document/`](./document/index.md) — 12 篇设计文档（ProDoc 文档图），从「为什么」
+  到「边界」；代码怎么摆看[组织一个应用](./document/structure.md)，插件怎么回调宿主
+  看[宿主服务与回呼](./document/host-service.md)
 - [`docs/getting-started.md`](./docs/getting-started.md) — 单篇速查：写插件、装插件、
   进程内、崩溃隔离、跨语言
 - [`examples/`](./examples) — 三个可跑示例（Rust 宿主 / Rust 插件 / Python 插件）

@@ -4,9 +4,51 @@
 但每一处都记在这里。`PROTOCOL_VERSION` 是**线上契约**版本，与 crate 版本独立
 （判定规则见 [README](./README.md#版本与兼容)）。
 
-## [未发布]
+## [0.12.0] — 未发布（breaking）
+
+### 新增
+
+- **`AsyncHostService`**：宿主服务的异步 trait，签名带调用者身份：
+
+  ```rust
+  async fn call(&self, cx: CallContext, method: &str, payload: Value)
+      -> Result<Value, HostCallError>;
+  ```
+
+  同步的 `HostService` 保留（旧实现零改动），注册表在调用时抹平差异：异步版直接
+  await，同步版挪到 `spawn_blocking`（不占 tokio worker；无运行时上下文时内联）。
+
+- **`CallContext::caller`**：本次回呼的来源插件 id，**由 supervisor 从连接归属
+  填写**，线上协议里没有这个字段 —— 插件无法伪装成别的插件。宿主服务据此做来源
+  授权与审计。同步 trait 没有这个参数（签名不变，向后兼容）。
+
+- **`PluginHandle::wait_until(contribution, ctx, payload, timeout, predicate)`**：
+  「握手完成」不等于「插件内部的服务真的起来了」。轮询 + 超时 + 判据这套就绪探测
+  每个宿主都会写一遍，收进框架。
+
+- **`PluginScope::snapshot()` → `PluginTreeSnapshot`**（可序列化）：把作用域 +
+  注册表投影成只读树。遍历、父子拼接、`ready/pending/failed/disabled` 判定原本
+  每个宿主都要重写一遍（重写就会与框架语义漂移）。
+
+- **`InvokeOutcome::data(Value)`**：只填结构化结果的构造器。配套把 `text` /
+  `images` 在文档注释里标为**遗留字段**。
+
+- **`HostServiceRegistry::names()`**：已注册服务名（排序），面板/快照用。
+
+- 文档新增 [`document/host-service.md`](./document/host-service.md)：宿主服务与
+  `HostCall` 回呼的完整说明（两种实现、身份、错误契约、三个坑、最小示例）。
+  `examples/` 补上了回呼演示——此前框架最重要的机制之一**没有示例也没有文档**。
+
+### 变更（breaking）
+
+- `HostServiceRegistry::call` 由同步变异步，并新增 `caller` 参数：
+  `async fn call(&self, caller: &str, service: &str, method: &str, payload: Value)`。
+  这是内部调用点（supervisor）才用的 API，宿主一般只调 `register_*`。
+- `mount` 失败现在会**写入 descriptor 的 `error`**（此前只出现在 `mount_all` 的
+  返回值里，事后无从查起、面板只能说"没挂载"）。快照因此能回答"它为什么没起来"。
 
 ### 变更
+
 
 - `Ctx::keys()` 的返回顺序改为**按名字排序**。底层是 `HashMap`（迭代顺序随机），
   而这份清单会进 `MissingService.available`（给人看的错误信息）与面板——随机顺序
