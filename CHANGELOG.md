@@ -4,6 +4,33 @@
 但每一处都记在这里。`PROTOCOL_VERSION` 是**线上契约**版本，与 crate 版本独立
 （判定规则见 [README](./README.md#版本与兼容)）。
 
+## [0.18.0] — 未发布（breaking）
+
+### 变更：`entry` 删除，`tag` 新增
+
+`ModuleManifest.entry` 从来只有一个消费者——面板详情页把它显示出来。它早期
+的用途是"组合根按这个名字查表，找到对应的 mount 闭包"，但改成
+`BuiltinModule::new(manifest, mount_fn)` 直接传闭包之后，查表那一步就没了，
+字段留着只是序列化兼容。删掉它同时把 `ModuleManifest::builtin()` 的参数从
+6 个减到 5 个（`id / name / version / kind / description`）。
+
+新增 `ModuleManifest.tag`（`#[serde(default)]`）：**这是分类标签，不是能力
+类别**。`kind` 说"这个模块属于哪一类能力"，`tag` 说"它从哪来"。两者正交，
+所以同一种 `kind` 下可以同时有随宿主发布的实现和外部装入的实现。
+
+- `builtin()` 缺省填 `inner`——这个构造函数造的就是"编译进宿主的那批"；
+- 外部模块用 `with_tag` 覆盖；
+- 框架只透传取值，词汇归宿主（与 `kind` 同一条纪律）。
+
+`ModuleDescriptor` 同步：`entry` → `tag`。
+
+### 修复：0.17.0 引入的 domain-agnostic 门禁失败
+
+0.17.0 给 `requires` 写文档时举了 `echo-agent.host.*` 当例子，触发了
+`framework-gates` 的领域词汇扫描（`agent` 在禁用词表里）。发版前只跑了
+`cargo test -p echo-module`，没跑全仓，门禁因此漏过去。本版改为"命名由宿主
+定"的措辞，全仓测试通过。
+
 ## [0.17.0] — 未发布
 
 ### 新增：清单承载依赖与提供（`requires` / `optional_requires` / `provides`）

@@ -85,7 +85,7 @@ mod tests {
         let sink_seen = seen.clone();
         reg.set_event_sink(Arc::new(move |event| sink_seen.lock().unwrap().push(event)));
         reg.register(Arc::new(BuiltinModule::new(
-            ModuleManifest::builtin("e.emit", "e", "1", "tool", "", ""),
+            ModuleManifest::builtin("e.emit", "e", "1", "tool", ""),
             |mctx: &MountContext| {
                 assert_eq!(mctx.module_id(), "e.emit", "挂载时注入模块 id");
                 mctx.emit("turn.started", serde_json::json!({"n": 1}));
@@ -118,7 +118,7 @@ mod tests {
         let ran = Arc::new(AtomicUsize::new(0));
         let flag = ran.clone();
         reg.register(Arc::new(BuiltinModule::new(
-            ModuleManifest::builtin("e.bare", "b", "1", "tool", "", ""),
+            ModuleManifest::builtin("e.bare", "b", "1", "tool", ""),
             move |mctx: &MountContext| {
                 assert!(mctx.events.is_none());
                 mctx.emit("nothing.listens", serde_json::Value::Null);
@@ -151,7 +151,7 @@ mod tests {
                 _ => silent.clone(),
             };
             reg.register(Arc::new(
-                BuiltinModule::new(ModuleManifest::builtin(id, id, "1", "tool", "", ""), |_| {
+                BuiltinModule::new(ModuleManifest::builtin(id, id, "1", "tool", ""), |_| {
                     Ok(vec![])
                 })
                 .with_subscriptions(subs)
@@ -194,7 +194,7 @@ mod tests {
         let h = hits.clone();
         reg.register(Arc::new(
             BuiltinModule::new(
-                ModuleManifest::builtin("e.off", "o", "1", "tool", "", ""),
+                ModuleManifest::builtin("e.off", "o", "1", "tool", ""),
                 |_| Ok(vec![]),
             )
             .with_subscriptions([ALL_EVENTS])
@@ -222,7 +222,7 @@ mod tests {
         let sink = names.clone();
         reg.set_event_sink(Arc::new(move |event| sink.lock().unwrap().push(event.name)));
         reg.register(Arc::new(BuiltinModule::new(
-            ModuleManifest::builtin("e.life", "l", "1", "tool", "", ""),
+            ModuleManifest::builtin("e.life", "l", "1", "tool", ""),
             |_| Ok(vec![]),
         )))
         .unwrap();

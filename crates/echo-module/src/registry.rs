@@ -17,7 +17,8 @@ pub struct ModuleDescriptor {
     pub version: String,
     pub kind: String,
     pub description: String,
-    pub entry: String,
+    /// 分类标签（`inner` / `outside` / 宿主自定义）——面板据此分组。
+    pub tag: String,
     pub author: String,
     /// Whether the module is currently mounted (active).
     pub enabled: bool,
@@ -141,7 +142,7 @@ impl From<&ModuleManifest> for ModuleDescriptor {
             version: m.version.clone(),
             kind: m.kind.clone(),
             description: m.description.clone(),
-            entry: m.entry.clone(),
+            tag: m.tag.clone(),
             author: m.author.clone(),
             enabled: true,
             builtin: m.builtin,
@@ -1292,7 +1293,7 @@ mod tests {
     fn register_and_descriptors() {
         let reg = ModuleRegistry::new();
         reg.register(Arc::new(BuiltinModule::new(
-            ModuleManifest::builtin("t.t.t", "test", "1.0", "tool", "entry", "d"),
+            ModuleManifest::builtin("t.t.t", "test", "1.0", "tool", "d"),
             |_| Ok(vec![]),
         )))
         .unwrap();
@@ -1308,7 +1309,7 @@ mod tests {
         let reg = ModuleRegistry::new();
         let p = || {
             Arc::new(BuiltinModule::new(
-                ModuleManifest::builtin("a.a.a", "x", "1", "skill", "", ""),
+                ModuleManifest::builtin("a.a.a", "x", "1", "skill", ""),
                 |_| Ok(vec![]),
             ))
         };
@@ -1323,7 +1324,7 @@ mod tests {
         let counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let c2 = counter.clone();
         reg.register(Arc::new(BuiltinModule::new(
-            ModuleManifest::builtin("m.m.m", "m", "1", "tool", "", ""),
+            ModuleManifest::builtin("m.m.m", "m", "1", "tool", ""),
             move |_| {
                 c2.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 Ok(vec![])
@@ -1348,7 +1349,7 @@ mod tests {
         let disposes = Arc::new(AtomicUsize::new(0));
         let (m, d) = (mounts.clone(), disposes.clone());
         reg.register(Arc::new(BuiltinModule::new(
-            ModuleManifest::builtin("r.r.r", "r", "1", "tool", "", ""),
+            ModuleManifest::builtin("r.r.r", "r", "1", "tool", ""),
             move |_| {
                 m.fetch_add(1, Ordering::SeqCst);
                 let d = d.clone();
@@ -1385,7 +1386,7 @@ mod tests {
         let reg = ModuleRegistry::new();
         for id in ["zzz.last", "aaa.first", "mmm.middle"] {
             reg.register(Arc::new(BuiltinModule::new(
-                ModuleManifest::builtin(id, id, "1", "tool", "", ""),
+                ModuleManifest::builtin(id, id, "1", "tool", ""),
                 |_| Ok(vec![]),
             )))
             .unwrap();
@@ -1405,7 +1406,7 @@ mod tests {
     fn module_errors_reach_descriptors() {
         let reg = ModuleRegistry::new();
         reg.register(Arc::new(BuiltinModule::new(
-            ModuleManifest::builtin("e.e.e", "e", "1", "tool", "", ""),
+            ModuleManifest::builtin("e.e.e", "e", "1", "tool", ""),
             |_| Ok(vec![]),
         )))
         .unwrap();
@@ -1424,7 +1425,7 @@ mod tests {
     fn definitions_reach_descriptors_without_env_values() {
         let reg = ModuleRegistry::new();
         reg.register(Arc::new(BuiltinModule::new(
-            ModuleManifest::builtin("x.ext", "x", "1", "tool", "", "")
+            ModuleManifest::builtin("x.ext", "x", "1", "tool", "")
                 .with_runtime(crate::ModuleRuntime::Subprocess)
                 .with_builtin_flag(false),
             |_| Ok(vec![]),
@@ -1455,7 +1456,7 @@ mod tests {
     fn config_origin_flags_reach_descriptors() {
         let reg = ModuleRegistry::new();
         reg.register(Arc::new(BuiltinModule::new(
-            ModuleManifest::builtin("o.o.o", "o", "1", "tool", "", ""),
+            ModuleManifest::builtin("o.o.o", "o", "1", "tool", ""),
             |_| Ok(vec![]),
         )))
         .unwrap();
@@ -1469,7 +1470,7 @@ mod tests {
     fn disabled_modules_skip_mount() {
         let reg = ModuleRegistry::new();
         reg.register(Arc::new(BuiltinModule::new(
-            ModuleManifest::builtin("d.d.d", "d", "1", "tool", "", ""),
+            ModuleManifest::builtin("d.d.d", "d", "1", "tool", ""),
             |_| Ok(vec![]),
         )))
         .unwrap();
@@ -1483,7 +1484,7 @@ mod tests {
     fn mount_failure_is_reported() {
         let reg = ModuleRegistry::new();
         reg.register(Arc::new(BuiltinModule::new(
-            ModuleManifest::builtin("f.f.f", "f", "1", "tool", "", ""),
+            ModuleManifest::builtin("f.f.f", "f", "1", "tool", ""),
             |_| Err(ModuleMountError::Mount("boom".into())),
         )))
         .unwrap();
@@ -1507,7 +1508,7 @@ mod tests {
         for (id, slot) in [("cfg.a", seen_a.clone()), ("cfg.b", seen_b.clone())] {
             let slot = slot.clone();
             reg.register(Arc::new(BuiltinModule::new(
-                ModuleManifest::builtin(id, id, "1", "tool", "", ""),
+                ModuleManifest::builtin(id, id, "1", "tool", ""),
                 move |mctx: &MountContext| {
                     *slot.lock().unwrap() = mctx.config().clone();
                     Ok(vec![])
@@ -1534,7 +1535,7 @@ mod tests {
         let seen: Arc<Mutex<serde_json::Value>> = Arc::new(Mutex::new(serde_json::json!("unset")));
         let slot = seen.clone();
         reg.register(Arc::new(BuiltinModule::new(
-            ModuleManifest::builtin("cfg.none", "n", "1", "tool", "", ""),
+            ModuleManifest::builtin("cfg.none", "n", "1", "tool", ""),
             move |mctx: &MountContext| {
                 *slot.lock().unwrap() = mctx.config().clone();
                 Ok(vec![])
@@ -1555,7 +1556,7 @@ mod tests {
         let seen: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
         let slot = seen.clone();
         reg.register(Arc::new(BuiltinModule::new(
-            ModuleManifest::builtin("cfg.re", "r", "1", "tool", "", ""),
+            ModuleManifest::builtin("cfg.re", "r", "1", "tool", ""),
             move |mctx: &MountContext| {
                 slot.lock().unwrap().push(mctx.config().clone());
                 Ok(vec![])
@@ -1583,7 +1584,7 @@ mod tests {
         let flag = ran.clone();
         reg.register(Arc::new(
             BuiltinModule::new(
-                ModuleManifest::builtin("svc.x", "x", "1", "loop", "", ""),
+                ModuleManifest::builtin("svc.x", "x", "1", "loop", ""),
                 move |_| {
                     flag.store(true, Ordering::SeqCst);
                     Ok(vec![])
@@ -1637,7 +1638,7 @@ mod tests {
         let reg = ModuleRegistry::new();
         reg.register(Arc::new(
             BuiltinModule::new(
-                ModuleManifest::builtin("svc.d", "d", "1", "loop", "", ""),
+                ModuleManifest::builtin("svc.d", "d", "1", "loop", ""),
                 |_| Ok(vec![]),
             )
             .with_required_services(["loop", "sanitizer"]),
@@ -1658,7 +1659,7 @@ mod tests {
         unmounted: Arc<std::sync::atomic::AtomicUsize>,
     ) -> Arc<dyn Module> {
         use std::sync::atomic::Ordering;
-        let manifest = ModuleManifest::builtin(id, id, "1", "loop", "", "");
+        let manifest = ModuleManifest::builtin(id, id, "1", "loop", "");
         let module = BuiltinModule::new(manifest, move |_| {
             mounted.fetch_add(1, Ordering::SeqCst);
             Ok(vec![])
@@ -1850,7 +1851,7 @@ mod tests {
     fn optional_services_are_declared_but_never_block_mount() {
         let reg = ModuleRegistry::new();
         let module = BuiltinModule::new(
-            ModuleManifest::builtin("o.o", "o", "1", "tool", "", ""),
+            ModuleManifest::builtin("o.o", "o", "1", "tool", ""),
             |_| Ok(vec![]),
         )
         .with_inject(crate::Inject::new(["loop"]).with_optional(["sanitizer", "extra"]));
@@ -1882,7 +1883,7 @@ mod command_text_block_tests {
         let reg = ModuleRegistry::new();
         reg.register(Arc::new(
             BuiltinModule::new(
-                ModuleManifest::builtin("cmd.a", "a", "1", "tool", "", ""),
+                ModuleManifest::builtin("cmd.a", "a", "1", "tool", ""),
                 |_| Ok(vec![]),
             )
             .with_commands(["DoThing", "Echo"])
@@ -1919,7 +1920,7 @@ mod command_text_block_tests {
         let ctx = MountContext::new();
         reg.register(Arc::new(
             BuiltinModule::new(
-                ModuleManifest::builtin("cmd.b", "b", "1", "tool", "", ""),
+                ModuleManifest::builtin("cmd.b", "b", "1", "tool", ""),
                 |_| Ok(vec![]),
             )
             .with_commands(["DoThing"])
@@ -1944,7 +1945,7 @@ mod command_text_block_tests {
         let reg = ModuleRegistry::new();
         for (id, answer) in [("cmd.first", None), ("cmd.second", Some("second"))] {
             reg.register(Arc::new(
-                BuiltinModule::new(ModuleManifest::builtin(id, id, "1", "tool", "", ""), |_| {
+                BuiltinModule::new(ModuleManifest::builtin(id, id, "1", "tool", ""), |_| {
                     Ok(vec![])
                 })
                 .with_commands(["Shared"])
@@ -1967,7 +1968,7 @@ mod command_text_block_tests {
         let reg = ModuleRegistry::new();
         reg.register(Arc::new(
             BuiltinModule::new(
-                ModuleManifest::builtin("cmd.err", "e", "1", "tool", "", ""),
+                ModuleManifest::builtin("cmd.err", "e", "1", "tool", ""),
                 |_| Ok(vec![]),
             )
             .with_commands(["Boom"])
@@ -1997,7 +1998,7 @@ mod command_text_block_tests {
             let m = mounted.clone();
             reg.register(Arc::new(
                 BuiltinModule::new(
-                    ModuleManifest::builtin(id, id, "1", "tool", "", ""),
+                    ModuleManifest::builtin(id, id, "1", "tool", ""),
                     move |_| {
                         m.fetch_add(1, Ordering::SeqCst);
                         Ok(vec![])
@@ -2031,7 +2032,7 @@ mod command_text_block_tests {
         let reg = ModuleRegistry::new();
         reg.register(Arc::new(
             BuiltinModule::new(
-                ModuleManifest::builtin("pm.ctx", "c", "1", "tool", "", ""),
+                ModuleManifest::builtin("pm.ctx", "c", "1", "tool", ""),
                 |_| Ok(vec![]),
             )
             .with_text_blocks([ModuleTextBlock::new("ctx", "上下文块", 0)])
@@ -2059,7 +2060,7 @@ mod command_text_block_tests {
         let reg = ModuleRegistry::new();
         reg.register(Arc::new(
             BuiltinModule::new(
-                ModuleManifest::builtin("pm.desc", "d", "1", "tool", "", ""),
+                ModuleManifest::builtin("pm.desc", "d", "1", "tool", ""),
                 |_| Ok(vec![]),
             )
             .with_commands(["A", "B"])
@@ -2085,7 +2086,7 @@ mod text_block_filter_tests {
     fn module(id: &'static str, key: &'static str) -> Arc<dyn Module> {
         Arc::new(
             crate::module::BuiltinModule::new(
-                ModuleManifest::builtin(id, id, "1", "tool", "", ""),
+                ModuleManifest::builtin(id, id, "1", "tool", ""),
                 |_| Ok(vec![]),
             )
             .with_text_blocks([crate::ModuleTextBlock::new(key, key, 0)])
@@ -2128,7 +2129,7 @@ mod async_command_tests {
         let p = polls.clone();
         reg.register(Arc::new(
             crate::module::BuiltinModule::new(
-                ModuleManifest::builtin("ac.a", "a", "1", "tool", "", ""),
+                ModuleManifest::builtin("ac.a", "a", "1", "tool", ""),
                 |_| Ok(vec![]),
             )
             .with_commands(["Slow"])
@@ -2161,7 +2162,7 @@ mod async_command_tests {
         let reg = ModuleRegistry::new();
         reg.register(Arc::new(
             crate::module::BuiltinModule::new(
-                ModuleManifest::builtin("ac.b", "b", "1", "tool", "", ""),
+                ModuleManifest::builtin("ac.b", "b", "1", "tool", ""),
                 |_| Ok(vec![]),
             )
             .with_commands(["Fast"])
@@ -2194,7 +2195,7 @@ mod async_command_tests {
         let mounted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let counter = mounted.clone();
         reg.register(Arc::new(BuiltinModule::new(
-            ModuleManifest::builtin("rt.cached", "cached", "1.0", "tool", "e", "d"),
+            ModuleManifest::builtin("rt.cached", "cached", "1.0", "tool", "d"),
             move |_| {
                 counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 Ok(vec![])
@@ -2223,7 +2224,7 @@ mod async_command_tests {
     fn lifecycle_calls_work_without_a_cached_ctx() {
         let reg = ModuleRegistry::new();
         reg.register(Arc::new(BuiltinModule::new(
-            ModuleManifest::builtin("rt.naked", "naked", "1.0", "tool", "e", "d"),
+            ModuleManifest::builtin("rt.naked", "naked", "1.0", "tool", "d"),
             |_| Ok(vec![]),
         )))
         .unwrap();
@@ -2244,7 +2245,7 @@ mod async_command_tests {
         let reg = ModuleRegistry::new();
         reg.register(Arc::new(
             BuiltinModule::new(
-                ModuleManifest::builtin("rt.sub", "sub", "1.0", "tool", "e", "d"),
+                ModuleManifest::builtin("rt.sub", "sub", "1.0", "tool", "d"),
                 |_| Ok(vec![]),
             )
             .with_subscriptions(["tool.done"]),
@@ -2265,7 +2266,7 @@ mod async_command_tests {
         let reg = ModuleRegistry::new();
         reg.register(Arc::new(
             BuiltinModule::new(
-                ModuleManifest::builtin("rt.all", "all", "1.0", "tool", "e", "d"),
+                ModuleManifest::builtin("rt.all", "all", "1.0", "tool", "d"),
                 |_| Ok(vec![]),
             )
             .with_subscriptions([crate::ALL_EVENTS]),
@@ -2306,7 +2307,7 @@ mod async_command_tests {
         let reg = Arc::new(ModuleRegistry::new());
         let attempts = Arc::new(AtomicUsize::new(0));
         reg.register(Arc::new(Reentrant {
-            manifest: ModuleManifest::builtin("rt.re", "re", "1.0", "tool", "e", "d"),
+            manifest: ModuleManifest::builtin("rt.re", "re", "1.0", "tool", "d"),
             registry: std::sync::Mutex::new(Some(Arc::clone(&reg))),
             attempts: attempts.clone(),
         }))

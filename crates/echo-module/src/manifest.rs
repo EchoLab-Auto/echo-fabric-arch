@@ -75,10 +75,16 @@ pub struct ModuleManifest {
     ///
     /// [`ModuleDescriptor::kind`]: crate::registry::ModuleDescriptor::kind
     pub kind: String,
-    /// Builtin mount entry name (composition root resolves it); empty for
-    /// data modules discovered from a module directory.
+    /// 分类标签：宿主用它把模块**分组展示**。
+    ///
+    /// 与 [`Self::kind`] 的分工：`kind` 说"这个模块属于哪一类能力"，
+    /// `tag` 说"它从哪来"（随宿主发布 / 从外部装入）。两者正交：同一类能力
+    /// 下既可能有随宿主发布的实现，也可能有外部装入的实现。
+    ///
+    /// 框架只透传、不解释取值——词汇归宿主（与 `kind` 同一条纪律）。
+    /// 空串 = 宿主未标注。
     #[serde(default)]
-    pub entry: String,
+    pub tag: String,
     /// Human-facing metadata shown in the Panel.
     #[serde(default)]
     pub author: String,
@@ -106,7 +112,7 @@ pub struct ModuleManifest {
     /// 模块要什么"必须读代码并跟到每个键的定义处。
     ///
     /// 键是**服务键**（`Ctx` 的字符串键），不是模块 id：一个键可能由宿主
-    /// 注册（`echo-agent.host.*`）也可能由另一个模块 `provide`。
+    /// 注册（命名由宿主定），也可能由另一个模块 `provide`。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub requires: Vec<String>,
     /// 软依赖：只声明，缺失不阻止挂载（面板据此画"弱依赖"）。
@@ -144,7 +150,6 @@ impl ModuleManifest {
         name: impl Into<String>,
         version: impl Into<String>,
         kind: impl Into<String>,
-        entry: impl Into<String>,
         description: impl Into<String>,
     ) -> Self {
         Self {
@@ -153,7 +158,9 @@ impl ModuleManifest {
             version: version.into(),
             description: description.into(),
             kind: kind.into(),
-            entry: entry.into(),
+            // 缺省 `inner`：这个构造函数就是"编译进宿主的那批"。外部模块
+            // （子进程 / 运行期装入）用 `with_tag` 覆盖。
+            tag: "inner".into(),
             package: None,
             author: "EchoAgentCore".into(),
             builtin: true,
@@ -162,6 +169,12 @@ impl ModuleManifest {
             optional_requires: Vec::new(),
             provides: Vec::new(),
         }
+    }
+
+    /// 声明分类标签（见 [`Self::tag`]）。
+    pub fn with_tag(mut self, tag: impl Into<String>) -> Self {
+        self.tag = tag.into();
+        self
     }
 
     /// 从 `module.toml` 的文本构造清单（`version` 由宿主注入）。
@@ -249,13 +262,13 @@ name = "内置工具集"
 version = "0.1.0"
 description = "平台无关的内置工具"
 kind = "tool"
-entry = "builtin_tools"
+tag = "inner"
 author = "EchoAgentCore"
 "#;
         let m = parse_manifest(text).unwrap();
         assert_eq!(m.id, "echo-agent.tools.builtin");
         assert_eq!(m.kind, "tool");
-        assert_eq!(m.entry, "builtin_tools");
+        assert_eq!(m.tag, "inner");
     }
 
     #[test]
@@ -306,7 +319,6 @@ kind = "skill"
             "内置工具集",
             "0.1.0",
             "tool",
-            "builtin",
             "desc",
         );
         assert_eq!(plain.runtime, ModuleRuntime::InProcess);
@@ -321,7 +333,6 @@ kind = "skill"
             "QQ 模块实例",
             "0.1.0",
             "instance",
-            "qq",
             "OneBot v11（独立进程）",
         )
         .with_runtime(ModuleRuntime::Subprocess);
@@ -367,7 +378,7 @@ kind = "skill"
 
     #[test]
     fn roundtrip_serialization() {
-        let m = ModuleManifest::builtin("a.b.c", "x", "1.0.0", "skill", "entry", "desc");
+        let m = ModuleManifest::builtin("a.b.c", "x", "1.0.0", "skill", "desc");
         let json = serde_json::to_string(&m).unwrap();
         let back: ModuleManifest = serde_json::from_str(&json).unwrap();
         assert_eq!(m, back);

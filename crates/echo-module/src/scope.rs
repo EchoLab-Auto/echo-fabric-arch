@@ -315,7 +315,7 @@ mod tests {
         child_mounts: Arc<AtomicUsize>,
         child_disposed: Arc<AtomicUsize>,
     ) -> Arc<dyn Module> {
-        let manifest = ModuleManifest::builtin(parent_id, parent_id, "1", "tool", "", "");
+        let manifest = ModuleManifest::builtin(parent_id, parent_id, "1", "tool", "");
         let child_id = child_id.to_string();
         Arc::new(BuiltinModule::new(manifest, move |mctx: &MountContext| {
             parent_mounts.fetch_add(1, Ordering::SeqCst);
@@ -323,7 +323,7 @@ mod tests {
             let cm = child_mounts.clone();
             let cd = child_disposed.clone();
             let child = Arc::new(BuiltinModule::new(
-                ModuleManifest::builtin(&child_id, &child_id, "1", "tool", "", ""),
+                ModuleManifest::builtin(&child_id, &child_id, "1", "tool", ""),
                 move |cmctx: &MountContext| {
                     cm.fetch_add(1, Ordering::SeqCst);
                     // 子作用域自己的服务：父作用域看不到。
@@ -422,13 +422,13 @@ mod tests {
         let gc_m = grandchild_mounted.clone();
         let gc_d = grandchild_disposed.clone();
         let middle = Arc::new(BuiltinModule::new(
-            ModuleManifest::builtin("p.middle", "m", "1", "tool", "", ""),
+            ModuleManifest::builtin("p.middle", "m", "1", "tool", ""),
             move |mctx: &MountContext| {
                 let inner = mctx.nest().expect("middle nests");
                 let gc_m = gc_m.clone();
                 let gc_d = gc_d.clone();
                 let leaf = Arc::new(BuiltinModule::new(
-                    ModuleManifest::builtin("p.leaf", "l", "1", "tool", "", ""),
+                    ModuleManifest::builtin("p.leaf", "l", "1", "tool", ""),
                     move |_| {
                         gc_m.fetch_add(1, Ordering::SeqCst);
                         let d = gc_d.clone();
@@ -467,7 +467,7 @@ mod tests {
         let nested = Arc::new(AtomicUsize::new(0));
         let n = nested.clone();
         reg.register(Arc::new(BuiltinModule::new(
-            ModuleManifest::builtin("p.bare", "b", "1", "tool", "", ""),
+            ModuleManifest::builtin("p.bare", "b", "1", "tool", ""),
             move |mctx: &MountContext| {
                 assert!(mctx.nest().is_none(), "裸注册表没有树把手");
                 n.fetch_add(1, Ordering::SeqCst);

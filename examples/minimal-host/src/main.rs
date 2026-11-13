@@ -90,7 +90,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "demo.counter",
         "计数器",
         "1.0.0",
-        "counter", // 开放标签：任何字符串都行，框架只透传不解释
         "counter",
         "挂载时把计数器注册进 Ctx",
     );

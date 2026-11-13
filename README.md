@@ -59,7 +59,7 @@ cargo build -p minimal-module && cargo run -p minimal-host
 ## 写一个模块
 
 ```toml
-echo-module-sdk = { git = "https://github.com/EchoLab-Auto/echo-fabric-arch", tag = "v0.17.0" }
+echo-module-sdk = { git = "https://github.com/EchoLab-Auto/echo-fabric-arch", tag = "v0.18.0" }
 ```
 
 ```rust

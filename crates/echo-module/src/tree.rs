@@ -194,7 +194,7 @@ mod tests {
 
     fn builtin(id: &str) -> BuiltinModule {
         BuiltinModule::new(
-            ModuleManifest::builtin(id, id, "1.0.0", "test", "", ""),
+            ModuleManifest::builtin(id, id, "1.0.0", "test", ""),
             |_| Ok(Vec::new()),
         )
     }
@@ -260,7 +260,7 @@ mod tests {
         root2
             .registry()
             .register(Arc::new(BuiltinModule::new(
-                ModuleManifest::builtin("demo.boom", "boom", "1.0.0", "test", "", ""),
+                ModuleManifest::builtin("demo.boom", "boom", "1.0.0", "test", ""),
                 |_| Err(crate::module::ModuleMountError::Mount("炸了".into())),
             )))
             .unwrap();
@@ -279,7 +279,7 @@ mod tests {
         let root = ModuleScope::root(Arc::new(Ctx::default()));
         // 父模块在 mount 里建子作用域并挂一个子模块。
         let parent = BuiltinModule::new(
-            ModuleManifest::builtin("demo.parent", "父", "1.0.0", "test", "", ""),
+            ModuleManifest::builtin("demo.parent", "父", "1.0.0", "test", ""),
             |mctx: &MountContext| {
                 let child = mctx.nest().expect("有树把手");
                 child
