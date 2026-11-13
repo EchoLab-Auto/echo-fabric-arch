@@ -316,6 +316,21 @@ pub struct Inject {
 }
 
 impl Inject {
+    /// 从清单的 `requires` / `optional_requires` 取依赖声明。
+    ///
+    /// 这是**默认路径**：模块把依赖写在 `module.toml` 里，框架据此构造
+    /// `Inject`，代码不必再调 [`BuiltinModule::with_inject`]。
+    ///
+    /// 两处都留的代价是必然漂移（同一份信息写两遍，改一处另一处就过期），
+    /// 所以 `with_inject` 现在只作为**覆盖**存在：调了它会盖掉清单里的声明，
+    /// 而宿主侧的装配期校验会把不一致当场报出来。
+    pub fn from_manifest(manifest: &ModuleManifest) -> Self {
+        Self {
+            required: manifest.requires.clone(),
+            optional: manifest.optional_requires.clone(),
+        }
+    }
+
     /// 只要硬依赖。
     pub fn new<I, S>(required: I) -> Self
     where
@@ -431,7 +446,18 @@ pub trait Module: Send + Sync {
     /// [`ModuleRegistry::mount_when_ready`]: crate::ModuleRegistry::mount_when_ready
     /// [`ModuleRegistry::reconcile`]: crate::ModuleRegistry::reconcile
     fn inject(&self) -> Inject {
-        Inject::default()
+        // 缺省从清单取：依赖是模块身份的一部分，写在 `module.toml` 里。
+        // 显式覆盖见 `BuiltinModule::with_inject`。
+        Inject::from_manifest(self.manifest())
+    }
+
+    /// 本模块 `provide` 到服务表的键（见 [`ModuleManifest::provides`]）。
+    ///
+    /// 与 [`Self::inject`] 是**同一条边的两端**：A 的 `inject.required` 里
+    /// 有 `k`，就应当有某个模块的 `provides` 含 `k`（或者宿主注册了 `k`）。
+    /// 缺了这一半，"这个键是谁给的"只能靠人肉搜索 `provide(` 调用。
+    fn provides(&self) -> Vec<String> {
+        self.manifest().provides.clone()
     }
 
     /// 本模块想订阅的**事件名**（默认空 = 不订阅）。
@@ -528,7 +554,11 @@ pub trait Module: Send + Sync {
 pub struct BuiltinModule {
     manifest: ModuleManifest,
     mount_fn: Box<dyn Fn(&MountContext) -> ModuleMountResult + Send + Sync>,
-    inject: Inject,
+    /// `Some` = 构造方显式调了 `with_inject`，盖掉清单里的 `requires`。
+    ///
+    /// 用 `Option` 而不是直接存 `Inject`，是为了区分"没声明依赖"和"显式
+    /// 声明了空依赖"——前者应当从清单取，后者是"我知道它没有依赖"。
+    inject_override: Option<Inject>,
     subscriptions: Vec<String>,
     event_handler: Option<EventHandler>,
     commands: Vec<String>,
@@ -578,7 +608,7 @@ impl BuiltinModule {
         Self {
             manifest,
             mount_fn: Box::new(mount_fn),
-            inject: Inject::default(),
+            inject_override: None,
             subscriptions: Vec::new(),
             event_handler: None,
             commands: Vec::new(),
@@ -670,9 +700,18 @@ impl BuiltinModule {
         self
     }
 
-    /// 声明本模块的依赖（见 [`Module::inject`]）：硬依赖 + 可选软依赖。
+    /// **覆盖**清单里声明的依赖（见 [`Module::inject`]）。
+    ///
+    /// 默认不需要调：依赖写在 `module.toml` 的 `requires` 里，框架用
+    /// [`Inject::from_manifest`] 取。这里留着是给两类调用方：
+    ///
+    /// - 还没有 `module.toml` 的第三方宿主（手工构造 manifest 的场景）；
+    /// - 测试要构造"依赖不满足"的模块。
+    ///
+    /// 调了它就意味着**清单与代码各有一份依赖**，两份不一致时装配期会报错
+    /// （见宿主侧的 `inject` 一致性校验）。
     pub fn with_inject(mut self, inject: Inject) -> Self {
-        self.inject = inject;
+        self.inject_override = Some(inject);
         self
     }
 
@@ -697,7 +736,13 @@ impl Module for BuiltinModule {
     }
 
     fn inject(&self) -> Inject {
-        self.inject.clone()
+        self.inject_override
+            .clone()
+            .unwrap_or_else(|| Inject::from_manifest(&self.manifest))
+    }
+
+    fn provides(&self) -> Vec<String> {
+        self.manifest.provides.clone()
     }
 
     fn subscribed_events(&self) -> Vec<String> {

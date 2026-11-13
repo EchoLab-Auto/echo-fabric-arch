@@ -4,6 +4,35 @@
 但每一处都记在这里。`PROTOCOL_VERSION` 是**线上契约**版本，与 crate 版本独立
 （判定规则见 [README](./README.md#版本与兼容)）。
 
+## [0.17.0] — 未发布
+
+### 新增：清单承载依赖与提供（`requires` / `optional_requires` / `provides`）
+
+依赖此前只存在于构造代码里（`BuiltinModule::with_inject(Inject::new([...]))`），
+后果有两个，都很实在：
+
+- **读不出来**：想知道"这个模块要什么"必须读代码，再跟到每个键的定义处；
+- **只有一半**：`Module` trait 有 `inject`，没有任何"我提供什么"的声明——
+  服务靠 mount 闭包里命令式 `ctx.provide(...)` 注册，于是"这个键是谁给的"
+  只能人肉搜索 `provide(`。面板的依赖图因此只能硬编码一张表。
+
+现在 `ModuleManifest` 有三个新字段（都 `#[serde(default)]`，旧 manifest 照旧
+解析）：`requires` 硬依赖服务键、`optional_requires` 软依赖、`provides` 本模块
+提供的键。
+
+配套：
+
+- [`Module::inject`] 的**缺省实现改为从清单取**（`Inject::from_manifest`），
+  模块不必再写一遍；`with_inject` 保留但语义降为**覆盖**（第三方宿主与测试用），
+  覆盖后与清单不一致由宿主侧校验报出。
+- 新增 [`Module::provides`]，缺省取 `manifest().provides`。
+- [`ModuleManifest::from_toml`]：从 `module.toml` 文本构造，只把版本号留给宿主
+  注入（版本随宿主发版，写进模块文件就得每次改十几个文件且改漏无人发现）。
+- `ModuleDescriptor` 加 `provided_services`，面板据此画真实依赖图。
+
+模块侧随之可以把身份、依赖、提供全部写在 crate 根目录的 `module.toml` 里，
+用 `include_str!` 编进二进制。
+
 ## [0.16.1] — 未发布
 
 ### 变更：`[[module]]` 的 `name` 改为可选（缺省取 id）

@@ -112,6 +112,12 @@ pub struct ModuleDescriptor {
     /// 只是声明（`key`），文本在装配时按上下文产生。空 = 不贡献。
     #[serde(default)]
     pub text_blocks: Vec<String>,
+    /// 本模块**提供**的服务键（`Module::provides`）。
+    ///
+    /// 与 `required_services` 合起来才是完整的依赖图：一边是"我要什么"，
+    /// 一边是"我给什么"。此前只有前者，面板只能靠硬编码表补另一半。
+    #[serde(default)]
+    pub provided_services: Vec<String>,
 }
 
 /// 模块的**定义来源**（面板技术信息展示用）。
@@ -156,6 +162,7 @@ impl From<&ModuleManifest> for ModuleDescriptor {
             subscribed_events: Vec::new(),
             handled_commands: Vec::new(),
             text_blocks: Vec::new(),
+            provided_services: Vec::new(),
         }
     }
 }
@@ -1152,6 +1159,7 @@ impl ModuleRegistry {
                 let inject = p.inject();
                 d.required_services = inject.required.clone();
                 d.optional_services = inject.optional.clone();
+                d.provided_services = p.provides();
                 d.pending_services = pending.get(&id).cloned().unwrap_or_default();
                 d.subscribed_events = p.subscribed_events();
                 d.handled_commands = p.handled_commands();

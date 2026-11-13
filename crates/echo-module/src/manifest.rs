@@ -98,6 +98,27 @@ pub struct ModuleManifest {
     /// 应以包 id 传播到同名包的工具与技能。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub package: Option<String>,
+    /// 硬依赖的**服务键**：挂载前必须已在 `Ctx` 服务表里，否则拒绝挂载。
+    ///
+    /// 与 [`Module::inject`](crate::Module::inject) 同义，但**声明在清单里**
+    /// 而不是散在构造代码中：清单是模块身份的单一真值来源，依赖关系属于身份
+    /// 的一部分。散在 `with_inject(...)` 里的后果是可读性为零——想知道"这个
+    /// 模块要什么"必须读代码并跟到每个键的定义处。
+    ///
+    /// 键是**服务键**（`Ctx` 的字符串键），不是模块 id：一个键可能由宿主
+    /// 注册（`echo-agent.host.*`）也可能由另一个模块 `provide`。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requires: Vec<String>,
+    /// 软依赖：只声明，缺失不阻止挂载（面板据此画"弱依赖"）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub optional_requires: Vec<String>,
+    /// 本模块 `provide` 到服务表的键。
+    ///
+    /// 此前这一半信息**完全不存在**：`Module` trait 只有 `inject`，服务靠
+    /// mount 闭包里命令式 `ctx.provide(...)` 注册，于是"谁提供了这个键"
+    /// 只能靠人肉搜索 `provide(` 调用。面板的依赖图因此只能硬编码一张表。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provides: Vec<String>,
 }
 
 impl ModuleManifest {
@@ -137,7 +158,24 @@ impl ModuleManifest {
             author: "EchoAgentCore".into(),
             builtin: true,
             runtime: ModuleRuntime::InProcess,
+            requires: Vec::new(),
+            optional_requires: Vec::new(),
+            provides: Vec::new(),
         }
+    }
+
+    /// 从 `module.toml` 的文本构造清单（`version` 由宿主注入）。
+    ///
+    /// 版本号不走 TOML：它是**宿主**的版本（同一份源码跟着 Core 一起发版），
+    /// 写在模块文件里就得每次发版都改十几个文件，且改漏了没人发现。
+    ///
+    /// 解析失败返回 [`ModuleError::Parse`]（带行列信息）。调用方通常是
+    /// `include_str!` + `expect`：内嵌资源解析不了必然是构建期 bug，早失败
+    /// 比带着半个清单跑起来好。
+    pub fn from_toml(text: &str, version: impl Into<String>) -> Result<Self, ModuleError> {
+        let mut manifest = parse_manifest(text)?;
+        manifest.version = version.into();
+        Ok(manifest)
     }
 
     /// 声明运行形态（builder 风格；未调用 = 进程内）。
