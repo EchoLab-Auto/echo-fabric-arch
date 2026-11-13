@@ -868,3 +868,24 @@ name = "内置工具集"
     assert_eq!(ids(&tree), vec!["tools"]);
     assert_eq!(tree.entries[0].layer, 0);
 }
+
+/// `name` 可选：缺省取 id。
+///
+/// 它是纯展示元数据（builtin 行根本不用它——标题来自模块自己的 manifest）。
+/// 早先必填，于是"只想写个开关"的配置也得抄名字，宿主机生成基线的场景
+/// 尤其别扭：写进去的名字不生效，看着却像能改。
+#[test]
+fn name_defaults_to_id_when_omitted() {
+    let dir = TempDir::new("name-default");
+    let profile = dir.write(
+        "modules.toml",
+        r#"[[module]]
+id = "echo-agent.tools"
+kind = "builtin"
+enabled = false
+"#,
+    );
+    let tree = load_ok(&profile);
+    assert_eq!(entry(&tree, "echo-agent.tools").name, "echo-agent.tools");
+    assert!(!entry(&tree, "echo-agent.tools").enabled);
+}

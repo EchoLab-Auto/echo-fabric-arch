@@ -60,6 +60,13 @@ struct RawProfile {
 struct RawEntry {
     id: String,
     kind: EntryKind,
+    /// 显示名。**可选**——缺省取 `id`。
+    ///
+    /// 它是纯展示元数据（`kind = "builtin"` 的行根本不用它：面板标题来自
+    /// 模块自己的 manifest）。早先要求必填，于是"只想写个开关"的配置也得
+    /// 抄一个名字过来，宿主机生成基线的场景尤其别扭——写进去的名字不生效，
+    /// 看着却像能改。
+    #[serde(default)]
     name: String,
     #[serde(default)]
     command: Option<String>,
@@ -85,10 +92,17 @@ fn default_enabled() -> bool {
 
 impl RawEntry {
     fn into_entry(self, layer: usize, source: &str) -> ModuleEntry {
+        // 空名字回退到 id：任何消费方都不会拿到空串去渲染（面板里一行空白
+        // 比显示 id 更让人困惑）。
+        let name = if self.name.trim().is_empty() {
+            self.id.clone()
+        } else {
+            self.name
+        };
         ModuleEntry {
             id: self.id,
             kind: self.kind,
-            name: self.name,
+            name,
             command: self.command,
             args: self.args,
             env: self.env,
