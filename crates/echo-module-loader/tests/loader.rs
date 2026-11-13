@@ -726,3 +726,145 @@ memory_mb = 128
     let reparsed: toml::Value = toml::from_str(&text).expect("valid toml");
     assert!(reparsed["module"][0]["limits"].is_table());
 }
+
+// ------------------------------------------------------ modules-base.toml --
+
+/// 基线文件：与 profile 同目录的 `modules-base.toml` 自动成为第 0 层。
+///
+/// 语义要点（改这组用例前先读 `BASE_FILE_NAME` 的文档）：
+/// - 存在才应用——老部署没有这个文件时行为一字不变；
+/// - 排在所有 bundle/patch 之前，所以 profile 能覆盖基线，反之不能；
+/// - 行的来源（`layer_source`）指向基线文件名，面板「这行来自哪」靠它。
+#[test]
+fn base_file_is_applied_as_layer_zero() {
+    let dir = TempDir::new("base-layer");
+    dir.write(
+        "modules-base.toml",
+        r#"[[module]]
+id = "tools"
+kind = "builtin"
+name = "内置工具集"
+"#,
+    );
+    let profile = dir.write(
+        "modules.toml",
+        r#"[[module]]
+id = "qq"
+kind = "stdio"
+name = "echo-module-qq"
+command = "/opt/echo/modules/qq"
+"#,
+    );
+
+    let tree = load_ok(&profile);
+    assert_eq!(ids(&tree), vec!["tools", "qq"]);
+
+    let tools = entry(&tree, "tools");
+    assert_eq!(tools.layer, 0, "基线必须是第 0 层");
+    assert_eq!(tools.layer_source, "modules-base.toml");
+    assert_eq!(tree.entries[1].layer, 1, "profile 行排在基线之后");
+}
+
+/// 没有基线文件 = 回到原来的行为（这条是向后兼容的锚点）。
+#[test]
+fn missing_base_file_changes_nothing() {
+    let dir = TempDir::new("no-base");
+    let profile = dir.write(
+        "modules.toml",
+        r#"[[module]]
+id = "qq"
+kind = "stdio"
+name = "echo-module-qq"
+command = "/opt/echo/modules/qq"
+"#,
+    );
+    let tree = load_ok(&profile);
+    assert_eq!(ids(&tree), vec!["qq"]);
+    assert_eq!(tree.entries[0].layer, 0);
+    assert_eq!(tree.entries[0].layer_source, "modules.toml");
+}
+
+/// profile 覆盖基线：同 id 整行替换，**位置留在基线那一格**。
+///
+/// 位置保留是刻意的——覆盖一个模块的开关不该把它挪到列表末尾，否则挂载
+/// 顺序会随无关的配置改动漂移。
+#[test]
+fn profile_overrides_base_entry_in_place() {
+    let dir = TempDir::new("base-override");
+    dir.write(
+        "modules-base.toml",
+        r#"[[module]]
+id = "tools"
+kind = "builtin"
+name = "内置工具集"
+
+[[module]]
+id = "skills"
+kind = "builtin"
+name = "技能目录"
+"#,
+    );
+    let profile = dir.write(
+        "modules.toml",
+        r#"[[module]]
+id = "tools"
+kind = "builtin"
+name = "内置工具集"
+enabled = false
+"#,
+    );
+
+    let tree = load_ok(&profile);
+    assert_eq!(ids(&tree), vec!["tools", "skills"], "覆盖不该换位置");
+    let tools = entry(&tree, "tools");
+    assert!(!tools.enabled, "profile 的 enabled 生效");
+    assert_eq!(tools.layer, 1, "生效的是 profile 那一层");
+    assert!(entry(&tree, "skills").enabled, "未被覆盖的基线行保持自己的开关");
+}
+
+/// 基线里的配置对 profile 不可见：整行替换不保留任何字段（同 patch 语义）。
+#[test]
+fn profile_override_does_not_inherit_base_config() {
+    let dir = TempDir::new("base-no-inherit");
+    dir.write(
+        "modules-base.toml",
+        r#"[[module]]
+id = "prodoc"
+kind = "builtin"
+name = "ProDoc 文档群"
+config = { roots = ["/a"] }
+"#,
+    );
+    let profile = dir.write(
+        "modules.toml",
+        r#"[[module]]
+id = "prodoc"
+kind = "builtin"
+name = "ProDoc 文档群"
+"#,
+    );
+
+    let tree = load_ok(&profile);
+    assert_eq!(
+        entry(&tree, "prodoc").config,
+        json!({}),
+        "整行替换意味着 profile 必须自己写全套配置——半覆盖会留下陈旧键"
+    );
+}
+
+/// 直接以 `modules-base.toml` 当 profile 时不重复应用同一份文件。
+#[test]
+fn base_file_as_profile_is_not_applied_twice() {
+    let dir = TempDir::new("base-as-profile");
+    let profile = dir.write(
+        "modules-base.toml",
+        r#"[[module]]
+id = "tools"
+kind = "builtin"
+name = "内置工具集"
+"#,
+    );
+    let tree = load_ok(&profile);
+    assert_eq!(ids(&tree), vec!["tools"]);
+    assert_eq!(tree.entries[0].layer, 0);
+}

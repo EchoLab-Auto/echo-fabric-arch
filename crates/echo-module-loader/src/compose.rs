@@ -8,6 +8,28 @@ use serde::Deserialize;
 
 use crate::{EntryKind, LoadError, LoadedTree, ModuleEntry, ModuleLimits};
 
+/// 基线文件名：与 profile（`modules.toml`）**同目录**时自动作为第 0 层应用。
+///
+/// ## 为什么需要它
+///
+/// Core 编译进去的模块在此之前是**隐式集合**——`modules.toml` 不提它们，
+/// 它们照样挂载（见 `resolve_mount_order` 的第 3 条）。隐式的好处是「升级
+/// 不会因为配置文件过时而少挂一个模块」，坏处是**没人能一眼看出到底装了
+/// 什么、按什么顺序**：要看清单得去面板里翻，想调顺序得凭猜。
+///
+/// `modules-base.toml` 把这份集合变成可读的文本：宿主把「我带了哪些模块、
+/// 什么顺序、默认开不开」写进基线；部署方在 `modules.toml` 里只写**追加**
+/// 的东西（外部仓模块、子进程模块）与**覆盖**（改某个内置模块的开关/配置）。
+///
+/// ## 为什么是「自动应用」而不是「在 profile 里写 bundles」
+///
+/// 写 `bundles = ["modules-base"]` 等于要求每个部署方手动接线，而且老部署
+/// （没有这一行）会静默不生效——一个默认不启用的「基线」不是基线。自动
+/// 应用则让**新旧部署行为一致**：文件在就用，不在就回到原来的隐式行为。
+///
+/// 它排在任何 bundle 之前，因为基线描述的是「宿主自带什么」这个前提。
+pub const BASE_FILE_NAME: &str = "modules-base.toml";
+
 /// One parsed file: an optional `[profile]` section plus `[[module]]` rows.
 #[derive(Debug, Deserialize)]
 struct RawDoc {
@@ -89,6 +111,9 @@ impl RawEntry {
 ///
 /// Bundle/patch references resolve relative to the profile's directory; a
 /// missing `.toml` extension is appended when the reference has none.
+///
+/// A sibling [`BASE_FILE_NAME`] is applied as layer 0 before anything the
+/// profile names — see the constant's docs for why.
 pub fn load(profile_path: &Path) -> Result<LoadedTree, LoadError> {
     let mut doc = read_doc(profile_path)?;
     let profile = doc.profile.take().unwrap_or_default();
@@ -96,6 +121,22 @@ pub fn load(profile_path: &Path) -> Result<LoadedTree, LoadError> {
 
     let mut composer = Composer::default();
     let mut layer = 0usize;
+
+    // 基线层：与 profile 同目录的 `modules-base.toml`（存在才用）。
+    //
+    // 位置在**所有** bundle/patch 之前，因为它是「宿主自带什么」的声明，
+    // 部署方的 profile 与 patch 都是对这份基线的追加/覆盖。
+    //
+    // 同一路径要排除：有人直接以 `modules-base.toml` 作为 profile 时，
+    // 不排除会把同一份文件应用两遍（第二次把第一次的行整体替换，结果
+    // 只是浪费，但 layer 编号与来源会错）。
+    if profile_path.file_name().map(|n| n != BASE_FILE_NAME).unwrap_or(true) {
+        let base_path = base_dir.join(BASE_FILE_NAME);
+        if base_path.is_file() {
+            composer.apply(read_doc(&base_path)?, layer, BASE_FILE_NAME);
+            layer += 1;
+        }
+    }
 
     for name in &profile.bundles {
         apply_reference(&mut composer, base_dir, name, &mut layer)?;

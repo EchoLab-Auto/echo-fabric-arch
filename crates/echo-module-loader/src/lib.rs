@@ -16,6 +16,10 @@
 //! resolve relative to the profile file's directory and get `.toml` appended
 //! when the name has no extension.
 //!
+//! A sibling `modules-base.toml` (see [`BASE_FILE_NAME`]) is applied as layer 0
+//! before the profile names anything — the host's own baseline, with the
+//! profile carrying only additions and overrides.
+//!
 //! After composition the tree is validated (`stdio` rows need a `command`,
 //! ids must be non-empty and whitespace-free, `requires` must resolve) and
 //! stably topologically sorted by `requires`, keeping insertion order for rows
@@ -30,7 +34,7 @@ mod error;
 mod model;
 mod output;
 
-pub use compose::load;
+pub use compose::{load, BASE_FILE_NAME};
 pub use error::LoadError;
 pub use model::{EntryKind, LoadedTree, ModuleEntry, ModuleLimits};
 pub use output::dump;

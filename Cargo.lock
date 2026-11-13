@@ -149,7 +149,7 @@ dependencies = [
 
 [[package]]
 name = "echo-context"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "dashmap",
  "proptest",
@@ -159,7 +159,7 @@ dependencies = [
 
 [[package]]
 name = "echo-module"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "echo-context",
  "serde",
@@ -172,7 +172,7 @@ dependencies = [
 
 [[package]]
 name = "echo-module-api"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -180,7 +180,7 @@ dependencies = [
 
 [[package]]
 name = "echo-module-host"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "async-trait",
  "base64",
@@ -195,7 +195,7 @@ dependencies = [
 
 [[package]]
 name = "echo-module-loader"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -205,7 +205,7 @@ dependencies = [
 
 [[package]]
 name = "echo-module-sdk"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "async-trait",
  "echo-module-api",
@@ -246,7 +246,7 @@ checksum = "3f9eec918d3f24069decb9af1554cad7c880e2da24a9afd88aca000531ab82c1"
 
 [[package]]
 name = "framework-gates"
-version = "0.15.0"
+version = "0.16.0"
 
 [[package]]
 name = "getrandom"
@@ -338,7 +338,7 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "minimal-host"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "echo-context",
  "echo-module",
@@ -349,7 +349,7 @@ dependencies = [
 
 [[package]]
 name = "minimal-module"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "echo-module-sdk",
  "serde_json",
