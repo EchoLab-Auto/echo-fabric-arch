@@ -52,15 +52,46 @@ pub trait Transport: Send + Sync {
 /// 崩溃（对端退出）的观察信号：对端消失后
 /// [`recv`](ModuleConnection::recv) 返回 [`TransportError::Closed`]、
 /// [`send`](ModuleConnection::send) 同样返回 [`TransportError::Closed`]。
+/// 宿主侧模块连接：双向协议消息 + 关停。
+///
+/// 崩溃（对端退出）的观察信号：对端消失后
+/// [`recv`](ModuleConnection::recv) 返回 [`TransportError::Closed`]、
+/// [`send`](ModuleConnection::send) 同样返回 [`TransportError::Closed`]。
+///
+/// **取消安全契约**：`recv` / `send` 的 future 可能被 `select!` 或调用方
+/// 取消。丢弃 future 不得丢失已读字节、不得让后续帧交错或错位——
+/// 实现须把半帧进度保存在连接内，下一次调用从断点继续（stdio 实现用
+/// 连接内读缓冲 / 写偏移；inproc 的通道收发本身取消安全）。
 #[async_trait]
 pub trait ModuleConnection: Send + Sync {
     /// 发送消息；对端关闭后返回 [`TransportError::Closed`]。
+    ///
+    /// 取消语义：future 被丢弃时，本帧可能只写出一部分；实现须保证后续
+    /// `send` 先补完它再写新帧（不会交错）。因此取消不等于「未发送」。
+    ///
+    /// **写坏即封死**：若某帧写到一半就失败（对端消失 / 管道破裂），管道里
+    /// 留着「帧前缀 + 半截帧体」。实现须把写方向标记为不可用，之后所有
+    /// `send` 直接 `Closed`——**绝不**把新帧追加到残帧后面，否则对端会把两帧
+    /// 连起来解析（误执行）。
+    ///
+    /// 注意 `send` 可能**长时间阻塞**（对端不读 → 管道/通道写满），所以调用
+    /// 方凡是承诺有界的地方都必须自己给它预算。
     async fn send(&self, msg: HostToModule) -> Result<(), TransportError>;
 
     /// 接收消息；对端关闭（崩溃 / 退出）时返回 [`TransportError::Closed`]。
+    ///
+    /// 取消语义：future 被丢弃时已读字节留在连接内，下一次 `recv` 从断点
+    /// 续读，流不会损坏。
     async fn recv(&self) -> Result<ModuleToHost, TransportError>;
-
-    /// 优雅关停：关闭宿主 → 模块方向并等待模块退出；deadline 内未退出返回
-    /// [`TransportError::Timeout`]（实现可强杀，见各实现文档）。
+    /// 关停连接并释放资源（子进程 / 任务 / 管道）。
+    ///
+    /// `deadline` 是**整个关停流程**的预算（不是每一步各一份）。
+    /// **实现必须整体有界**：不得因为「对端不读、写方向被一个卡住的 `send`
+    /// 占着」而无限等待。拿不到写方向、或写方向留有半帧时，实现应**强制
+    /// 关闭**（stdio：`start_kill()` 并封死写方向；inproc：`abort()` 任务），
+    /// 并返回 [`TransportError::Timeout`] 说明「没能优雅关停，已强杀」。
+    ///
+    /// 「超时就丢掉 future」是不合格的实现：那只让调用方早退，进程 / 任务
+    /// 与写方向状态都还留着，下一次关停照样挂。
     async fn shutdown(&self, deadline: Duration) -> Result<(), TransportError>;
 }

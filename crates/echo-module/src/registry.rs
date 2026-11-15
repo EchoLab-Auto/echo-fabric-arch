@@ -203,6 +203,74 @@ impl Drop for OwnerGuard {
     }
 }
 
+/// 每个模块 id 的生命周期闸门：同一 id 的 `mount` / `unmount`（以及
+/// `restart` 的「卸 + 挂」）串行执行，不同 id 互不阻塞。
+///
+/// 全局映射只在**取闸门**时短暂加锁；模块的 mount/unmount 回调执行期间
+/// 不持任何全局锁（回调里可以查询注册表，不会自锁）。
+///
+/// 同一线程重入同一 id（例如 mount 回调里又 mount 自己）**不等待**：
+/// `acquire` 返回 `None`，调用方转成显式错误——用锁直接等会死锁。
+struct LifecycleGate {
+    /// 当前持有者（`None` = 空闲）；线程 id 用于识别重入。
+    owner: std::sync::Mutex<Option<std::thread::ThreadId>>,
+    /// 释放通知（等待者重新竞争）。
+    released: std::sync::Condvar,
+}
+
+impl LifecycleGate {
+    fn new() -> Self {
+        Self {
+            owner: std::sync::Mutex::new(None),
+            released: std::sync::Condvar::new(),
+        }
+    }
+
+    /// 尝试取得闸门；同一线程重入返回 `None`（调用方必须报错而不是等待）。
+    fn acquire(self: &Arc<Self>) -> Option<LifecycleLease> {
+        let me = std::thread::current().id();
+        let mut owner = self
+            .owner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        loop {
+            match *owner {
+                Some(current) if current == me => return None,
+                Some(_) => {
+                    owner = self
+                        .released
+                        .wait(owner)
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                }
+                None => {
+                    *owner = Some(me);
+                    return Some(LifecycleLease {
+                        gate: Arc::clone(self),
+                    });
+                }
+            }
+        }
+    }
+}
+
+/// 闸门租约：drop 时释放并唤醒一个等待者。
+struct LifecycleLease {
+    gate: Arc<LifecycleGate>,
+}
+
+impl Drop for LifecycleLease {
+    fn drop(&mut self) {
+        let mut owner = self
+            .gate
+            .owner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *owner = None;
+        drop(owner);
+        self.gate.released.notify_one();
+    }
+}
+
 /// Registry of modules with mount/unmount lifecycle.
 ///
 /// Thread-safe: `register` is for composition-root-time registration of
@@ -248,6 +316,9 @@ pub struct ModuleRegistry {
     /// 与 `enabled_state = false`（人主动禁用）区分开：这些是"该挂、还没
     /// 条件挂"，[`Self::reconcile`] 在依赖到位后会把它们挂上。
     pending: std::sync::Mutex<BTreeMap<String, Vec<String>>>,
+    /// 每个模块 id 的生命周期闸门（见 [`LifecycleGate`]）。只在取闸门时
+    /// 短暂加锁；条目随 id 数量增长（模块集有界，不做回收）。
+    lifecycle: std::sync::Mutex<std::collections::HashMap<String, Arc<LifecycleGate>>>,
     /// 注册顺序（`descriptors()` 按它输出）。
     ///
     /// 为什么单独存：底层 `modules` 是 `BTreeMap`（按 id 排序），而
@@ -433,8 +504,14 @@ impl ModuleRegistry {
 
     /// Register a module definition (composition root / discovery). Does not
     /// mount it yet.
+    ///
+    /// 与同 id 的 mount/unmount 串行（同一把 per-id 闸门），避免
+    /// 「定义被移除 / 替换」与「正在挂载」交错出半状态。
     pub fn register(&self, module: Arc<dyn Module>) -> Result<(), String> {
         let id = module.manifest().id.clone();
+        let Some(_lease) = self.acquire_lifecycle(&id) else {
+            return Err(Self::reentrant_lifecycle_error(&id, "register").to_string());
+        };
         let mut modules = self
             .modules
             .lock()
@@ -452,7 +529,13 @@ impl ModuleRegistry {
     }
 
     /// Remove a registered (and unmounted) module by id.
+    ///
+    /// 与同 id 的 mount/unmount 串行；重入（例如 mount 回调里注销自己）
+    /// 返回 `false` 而不是等待。
     pub fn unregister(&self, id: &str) -> bool {
+        let Some(_lease) = self.acquire_lifecycle(id) else {
+            return false;
+        };
         let active = self
             .active
             .lock()
@@ -472,6 +555,25 @@ impl ModuleRegistry {
             .is_some()
     }
 
+    /// 取该 id 的生命周期闸门并尝试持有；同一线程重入返回 `None`。
+    fn acquire_lifecycle(&self, id: &str) -> Option<LifecycleLease> {
+        let gate = self
+            .lifecycle
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(id.to_string())
+            .or_insert_with(|| Arc::new(LifecycleGate::new()))
+            .clone();
+        gate.acquire()
+    }
+
+    /// 重入生命周期操作的显式错误（不等待，避免自锁）。
+    fn reentrant_lifecycle_error(id: &str, action: &str) -> ModuleMountError {
+        ModuleMountError::Mount(format!(
+            "reentrant {action} for module id `{id}`: the same module's mount/unmount is already in progress on this thread"
+        ))
+    }
+
     /// Activate a module: run its mount hooks and retain disposers.
     ///
     /// 1. **服务键就绪校验**：模块通过 [`Module::required_services`] 声明的
@@ -482,8 +584,29 @@ impl ModuleRegistry {
     ///    合并进传给 mount 的上下文；模块拿到的 `MountContext.config` 就是
     ///    它自己的那一份，不用自己去读 `modules.toml`（也就不会读到别人的）。
     ///
+    /// **生命周期与并发**：同一 id 的 `mount` / `unmount` 串行执行（不同
+    /// id 互不阻塞）；已挂载时再次 `mount` 是幂等 no-op（不重跑回调、不
+    /// 替换 disposer）。检查与动作在同一把 per-id 闸门下，不存在
+    /// check-then-act 窗口。mount 回调执行期间不持全局锁（回调内可查询
+    /// 注册表）；但在自己的 mount 回调里重入同一 id 的 mount/unmount 会
+    /// 返回错误而不是死锁。
+    ///
     /// [`Module::required_services`]: crate::Module::required_services
     pub fn mount(&self, id: &str, ctx: &MountContext) -> ModuleMountResult {
+        // 同一 id 的 mount/unmount 串行；重入直接报错而不是死锁。
+        let Some(_lease) = self.acquire_lifecycle(id) else {
+            return Err(Self::reentrant_lifecycle_error(id, "mount"));
+        };
+        self.mount_locked(id, ctx)
+    }
+
+    /// `mount` 的主体：调用方必须已持有该 id 的生命周期租约。
+    fn mount_locked(&self, id: &str, ctx: &MountContext) -> ModuleMountResult {
+        // 幂等：已挂载 = no-op。检查与动作同在该 id 的闸门内，
+        // 因此不会与并发的 unmount / 另一次 mount 交错。
+        if self.is_mounted(id) {
+            return Ok(Vec::new());
+        }
         let module = match self.module(id) {
             Some(module) => module,
             None => {
@@ -560,6 +683,14 @@ impl ModuleRegistry {
     /// 子先于父，且子作用域自己的 ctx 随之丢弃（父链引用断掉）。没有树把手
     /// 时（裸注册表挂载）就是单层卸载，行为与 v0.5.0 一致。
     pub fn unmount(&self, id: &str) -> Result<(), ModuleMountError> {
+        let Some(_lease) = self.acquire_lifecycle(id) else {
+            return Err(Self::reentrant_lifecycle_error(id, "unmount"));
+        };
+        self.unmount_locked(id)
+    }
+
+    /// `unmount` 的主体：调用方必须已持有该 id 的生命周期租约。
+    fn unmount_locked(&self, id: &str) -> Result<(), ModuleMountError> {
         // 子作用域先走：否则父的服务表先撤，子模块会看到"父服务突然消失"
         // 这种半死状态（它的 unmount 可能还要用父服务）。
         for child in self.take_child_scopes(id) {
@@ -1278,8 +1409,14 @@ impl ModuleRegistry {
                 "module {id} is disabled; enable it before restarting"
             ));
         }
-        self.unmount(id).map_err(|e| e.to_string())?;
-        self.mount(id, ctx).map(|_| ()).map_err(|e| e.to_string())
+        // 「卸 + 挂」作为一个生命周期操作串行：中间不插入同 id 的 mount。
+        let _lease = self
+            .acquire_lifecycle(id)
+            .ok_or_else(|| Self::reentrant_lifecycle_error(id, "restart").to_string())?;
+        self.unmount_locked(id).map_err(|e| e.to_string())?;
+        self.mount_locked(id, ctx)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
     }
 }
 
@@ -1335,7 +1472,232 @@ mod tests {
         assert_eq!(counter.load(std::sync::atomic::Ordering::SeqCst), 1);
         reg.unmount_all();
         reg.mount_all(&ctx);
+        reg.mount_all(&ctx);
         assert_eq!(counter.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    /// 顺序重复 mount：第二次必须是幂等 no-op——不得重跑 mount 闭包，也不得
+    /// 让第一次的 disposer 撤掉（第二次注册的）服务。
+    ///
+    /// 旧实现把新 disposer 直接 `active.insert` 覆盖旧值，旧 `Vec<Disposer>`
+    /// 当场被 drop → 按 key 无条件撤销，把同名新服务一起删掉。
+    #[test]
+    fn sequential_double_mount_is_idempotent() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let reg = ModuleRegistry::new();
+        let ctx = Arc::new(echo_context::Ctx::default());
+        let mctx = MountContext::new().with_ctx(ctx.clone());
+        let mounts = Arc::new(AtomicUsize::new(0));
+
+        let counter = mounts.clone();
+        let services = ctx.clone();
+        reg.register(Arc::new(BuiltinModule::new(
+            ModuleManifest::builtin("dup.mount", "dup", "1", "tool", ""),
+            move |_| {
+                counter.fetch_add(1, Ordering::SeqCst);
+                let disposer = services.register::<u32>("dup.service", 7);
+                Ok(vec![disposer])
+            },
+        )))
+        .unwrap();
+
+        reg.mount("dup.mount", &mctx).expect("first mount");
+        assert_eq!(mounts.load(Ordering::SeqCst), 1);
+        assert_eq!(ctx.resolve::<u32>("dup.service"), Some(7));
+
+        reg.mount("dup.mount", &mctx)
+            .expect("second mount must be idempotent");
+        assert_eq!(
+            mounts.load(Ordering::SeqCst),
+            1,
+            "重复 mount 不得重跑 mount 闭包"
+        );
+        assert_eq!(
+            ctx.resolve::<u32>("dup.service"),
+            Some(7),
+            "重复 mount 不得撤销已注册服务"
+        );
+
+        reg.unmount("dup.mount").expect("unmount");
+        assert_eq!(ctx.resolve::<u32>("dup.service"), None);
+        assert!(!reg.is_mounted("dup.mount"));
+    }
+
+    /// 同一 id 的 mount / unmount 跨线程串行：慢 mount 回调执行期间，
+    /// 第二次 mount 必须等它完成，然后按幂等 no-op 返回（回调只跑一次）。
+    #[test]
+    fn same_id_mount_lifecycle_is_serialized_across_threads() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Condvar, Mutex};
+        use std::time::Duration;
+
+        // (进入次数, 是否放行)
+        let gate = Arc::new((Mutex::new((0usize, false)), Condvar::new()));
+        let reg = Arc::new(ModuleRegistry::new());
+        let ctx = Arc::new(echo_context::Ctx::default());
+        let mctx = MountContext::new().with_ctx(ctx.clone());
+        let mounts = Arc::new(AtomicUsize::new(0));
+
+        let counter = mounts.clone();
+        let services = ctx.clone();
+        let callback_gate = gate.clone();
+        reg.register(Arc::new(BuiltinModule::new(
+            ModuleManifest::builtin("serial.id", "s", "1", "kit", ""),
+            move |_| {
+                counter.fetch_add(1, Ordering::SeqCst);
+                let (lock, cv) = &*callback_gate;
+                let mut state = lock.lock().unwrap();
+                state.0 += 1;
+                cv.notify_all();
+                while !state.1 {
+                    state = cv.wait(state).unwrap();
+                }
+                drop(state);
+                let disposer = services.register::<u32>("serial.service", 1);
+                Ok(vec![disposer])
+            },
+        )))
+        .unwrap();
+
+        let first = {
+            let reg = reg.clone();
+            let mctx = mctx.clone();
+            std::thread::spawn(move || reg.mount("serial.id", &mctx))
+        };
+
+        // 等第一次 mount 进入回调。
+        {
+            let (lock, cv) = &*gate;
+            let mut state = lock.lock().unwrap();
+            while state.0 == 0 {
+                state = cv.wait_timeout(state, Duration::from_secs(5)).unwrap().0;
+            }
+        }
+
+        let second = {
+            let reg = reg.clone();
+            let mctx = mctx.clone();
+            std::thread::spawn(move || reg.mount("serial.id", &mctx))
+        };
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(
+            mounts.load(Ordering::SeqCst),
+            1,
+            "同 id 的第二次 mount 不得与第一次并发进入回调"
+        );
+
+        // 放行第一次；第二次应等到闸门释放后按幂等返回。
+        {
+            let (lock, cv) = &*gate;
+            lock.lock().unwrap().1 = true;
+            cv.notify_all();
+        }
+        first.join().unwrap().expect("first mount ok");
+        second.join().unwrap().expect("second mount is idempotent");
+        assert_eq!(mounts.load(Ordering::SeqCst), 1, "幂等：回调只跑一次");
+        assert_eq!(ctx.resolve::<u32>("serial.service"), Some(1));
+    }
+
+    /// 重入同一 id 的 mount：返回显式错误，不等待（等待会死锁）。
+    #[test]
+    fn reentrant_same_id_mount_errors_instead_of_deadlocking() {
+        let reg = Arc::new(ModuleRegistry::new());
+        let probe = reg.clone();
+        reg.register(Arc::new(BuiltinModule::new(
+            ModuleManifest::builtin("re.entry", "r", "1", "kit", ""),
+            move |_| match probe.mount("re.entry", &MountContext::new()) {
+                Ok(disposers) => Ok(disposers),
+                Err(e) => Err(ModuleMountError::Mount(format!("inner: {e}"))),
+            },
+        )))
+        .unwrap();
+
+        let err = match reg.mount("re.entry", &MountContext::new()) {
+            Err(e) => e,
+            Ok(_) => panic!("reentrant mount must fail, not deadlock"),
+        };
+        assert!(
+            err.to_string().contains("reentrant"),
+            "error should name the reentrancy: {err}"
+        );
+        assert!(!reg.is_mounted("re.entry"));
+    }
+
+    /// mount / unmount 并发交错：最终状态必须自洽——挂载着就有服务，
+    /// 卸载后服务消失；旧 disposer 不得撤销新一轮注册。
+    #[test]
+    fn concurrent_mount_unmount_keeps_registration_consistent() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let reg = Arc::new(ModuleRegistry::new());
+        let ctx = Arc::new(echo_context::Ctx::default());
+        let mctx = MountContext::new().with_ctx(ctx.clone());
+        let mounts = Arc::new(AtomicUsize::new(0));
+        let counter = mounts.clone();
+        let services = ctx.clone();
+        reg.register(Arc::new(BuiltinModule::new(
+            ModuleManifest::builtin("race.id", "r", "1", "kit", ""),
+            move |_| {
+                counter.fetch_add(1, Ordering::SeqCst);
+                let disposer = services.register::<u32>("race.service", 7);
+                Ok(vec![disposer])
+            },
+        )))
+        .unwrap();
+
+        for _ in 0..40 {
+            let mounter = {
+                let reg = reg.clone();
+                let mctx = mctx.clone();
+                std::thread::spawn(move || {
+                    for _ in 0..10 {
+                        reg.mount("race.id", &mctx).expect("mount");
+                    }
+                })
+            };
+            let unmounter = {
+                let reg = reg.clone();
+                std::thread::spawn(move || {
+                    for _ in 0..10 {
+                        reg.unmount("race.id").expect("unmount");
+                    }
+                })
+            };
+            mounter.join().unwrap();
+            unmounter.join().unwrap();
+
+            // 收尾到确定状态再断言。
+            reg.mount("race.id", &mctx).expect("final mount");
+            assert!(reg.is_mounted("race.id"));
+            assert_eq!(
+                ctx.resolve::<u32>("race.service"),
+                Some(7),
+                "挂载态必须有服务（旧 disposer 不得撤销新注册）"
+            );
+            reg.unmount("race.id").expect("final unmount");
+            assert!(!reg.is_mounted("race.id"));
+            assert!(!ctx.contains("race.service"), "卸载后服务必须消失");
+        }
+    }
+
+    /// mount 回调里查注册表（只读）不得死锁：回调执行期间不能持全局锁。
+    #[test]
+    fn mount_callback_can_query_registry_without_deadlock() {
+        let reg = Arc::new(ModuleRegistry::new());
+        let probe = reg.clone();
+        reg.register(Arc::new(BuiltinModule::new(
+            ModuleManifest::builtin("q.query", "q", "1", "tool", ""),
+            move |_| {
+                assert!(!probe.is_mounted("q.query"));
+                assert!(probe.descriptors().iter().any(|d| d.id == "q.query"));
+                Ok(vec![])
+            },
+        )))
+        .unwrap();
+        reg.mount("q.query", &MountContext::new())
+            .expect("mount with registry query in callback");
+        assert!(reg.is_mounted("q.query"));
     }
 
     /// `restart` = 卸下 + 重新挂载，**不动**启用状态；
@@ -1850,11 +2212,11 @@ mod tests {
     #[test]
     fn optional_services_are_declared_but_never_block_mount() {
         let reg = ModuleRegistry::new();
-        let module = BuiltinModule::new(
-            ModuleManifest::builtin("o.o", "o", "1", "tool", ""),
-            |_| Ok(vec![]),
-        )
-        .with_inject(crate::Inject::new(["loop"]).with_optional(["sanitizer", "extra"]));
+        let module =
+            BuiltinModule::new(ModuleManifest::builtin("o.o", "o", "1", "tool", ""), |_| {
+                Ok(vec![])
+            })
+            .with_inject(crate::Inject::new(["loop"]).with_optional(["sanitizer", "extra"]));
         reg.register(Arc::new(module)).unwrap();
         let ctx = Arc::new(echo_context::Ctx::default());
         let _keep = ctx.register::<u8>("loop", 1u8);

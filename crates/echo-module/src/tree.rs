@@ -193,10 +193,9 @@ mod tests {
     }
 
     fn builtin(id: &str) -> BuiltinModule {
-        BuiltinModule::new(
-            ModuleManifest::builtin(id, id, "1.0.0", "test", ""),
-            |_| Ok(Vec::new()),
-        )
+        BuiltinModule::new(ModuleManifest::builtin(id, id, "1.0.0", "test", ""), |_| {
+            Ok(Vec::new())
+        })
     }
 
     #[test]

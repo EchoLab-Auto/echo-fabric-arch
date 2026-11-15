@@ -1,9 +1,20 @@
 //! Scoped registration: name-keyed entries with per-scope shadowing.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
 use crate::ctx::Disposer;
+
+/// One registered entry: the value plus its **ownership generation**.
+///
+/// 代次由注册时分配，撤销只作用于「自己那次注册」——晚到的旧 `Disposer`
+/// 不会按名字误删后来的新注册。没有它，`register("port")` → `register("port")`
+/// → 第一个 disposer 触发，就把**新的**那份删掉了（重复挂载 / 重挂的经典竞态）。
+struct Entry<T> {
+    generation: u64,
+    value: Arc<T>,
+}
 
 /// A registry whose entries are either global or scoped to one scope key.
 ///
@@ -14,10 +25,13 @@ use crate::ctx::Disposer;
 /// instance identity).
 ///
 /// Registration returns a [`Disposer`]; unloading a scope's module unwinds
-/// all its scoped registrations.
+/// all its scoped registrations. 撤销是**按代次**的：只撤自己那次注册，
+/// 不会误删同名的后来者（见 `Entry`）。
 pub struct ScopedRegistry<T: Send + Sync + 'static> {
-    global: RwLock<HashMap<String, Arc<T>>>,
-    scoped: RwLock<HashMap<String, HashMap<String, Arc<T>>>>,
+    global: RwLock<HashMap<String, Entry<T>>>,
+    scoped: RwLock<HashMap<String, HashMap<String, Entry<T>>>>,
+    /// 下一次注册的所有权代次（全局 / 作用域共用一条单调序列）。
+    next_generation: AtomicU64,
 }
 
 impl<T: Send + Sync + 'static> Default for ScopedRegistry<T> {
@@ -31,34 +45,56 @@ impl<T: Send + Sync + 'static> ScopedRegistry<T> {
         Self {
             global: RwLock::new(HashMap::new()),
             scoped: RwLock::new(HashMap::new()),
+            next_generation: AtomicU64::new(0),
         }
+    }
+
+    fn next_generation(&self) -> u64 {
+        self.next_generation.fetch_add(1, Ordering::Relaxed)
     }
 
     /// Register a global entry (visible to every scope).
     pub fn register_global(self: &Arc<Self>, name: &str, entry: T) -> Disposer {
+        let generation = self.next_generation();
         self.global
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(name.to_string(), Arc::new(entry));
+            .insert(
+                name.to_string(),
+                Entry {
+                    generation,
+                    value: Arc::new(entry),
+                },
+            );
         let registry = self.clone();
         let name = name.to_string();
         Disposer::from_fn(move || {
-            registry
+            let mut global = registry
                 .global
                 .write()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .remove(&name);
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            // 只撤自己那一代：同名的后来者（新代次）不受影响。
+            if global.get(&name).map(|entry| entry.generation) == Some(generation) {
+                global.remove(&name);
+            }
         })
     }
 
     /// Register a scoped entry (visible only to `scope`; shadows global).
     pub fn register_scoped(self: &Arc<Self>, scope: &str, name: &str, entry: T) -> Disposer {
+        let generation = self.next_generation();
         self.scoped
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .entry(scope.to_string())
             .or_default()
-            .insert(name.to_string(), Arc::new(entry));
+            .insert(
+                name.to_string(),
+                Entry {
+                    generation,
+                    value: Arc::new(entry),
+                },
+            );
         let registry = self.clone();
         let scope = scope.to_string();
         let name = name.to_string();
@@ -68,7 +104,10 @@ impl<T: Send + Sync + 'static> ScopedRegistry<T> {
                 .write()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(entries) = scoped.get_mut(&scope) {
-                entries.remove(&name);
+                // 同上：代次不符 = 已被后来者顶替，撤销必须是无操作。
+                if entries.get(&name).map(|entry| entry.generation) == Some(generation) {
+                    entries.remove(&name);
+                }
                 if entries.is_empty() {
                     scoped.remove(&scope);
                 }
@@ -86,14 +125,14 @@ impl<T: Send + Sync + 'static> ScopedRegistry<T> {
                 .get(scope)
                 .and_then(|entries| entries.get(name))
             {
-                return Some(entry.clone());
+                return Some(Arc::clone(&entry.value));
             }
         }
         self.global
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(name)
-            .cloned()
+            .map(|entry| Arc::clone(&entry.value))
     }
 
     /// Names visible to a scope (scoped entries shadowing globals).
@@ -193,6 +232,53 @@ mod tests {
         assert!(reg.lookup(None, "port").is_some());
         disposer.dispose();
         assert!(reg.lookup(None, "port").is_none());
+    }
+
+    /// 旧代次的 disposer **不得**撤销同名的新注册（按 key 无条件删除的经典 ABA）。
+    #[test]
+    fn stale_global_disposer_keeps_the_newer_registration() {
+        let reg: Arc<ScopedRegistry<u32>> = Arc::new(ScopedRegistry::new());
+        let first = reg.register_global("port", 3132);
+        let _second = reg.register_global("port", 4000);
+
+        first.dispose();
+
+        assert_eq!(
+            reg.lookup(None, "port"),
+            Some(Arc::new(4000)),
+            "旧 disposer 误删了后来者的注册"
+        );
+        assert_eq!(reg.len(), 1);
+    }
+
+    /// 作用域条目同理：旧 disposer 不能清掉同名的新注册，也不能顺手删掉作用域。
+    #[test]
+    fn stale_scoped_disposer_keeps_the_newer_registration() {
+        let reg: Arc<ScopedRegistry<u32>> = Arc::new(ScopedRegistry::new());
+        let first = reg.register_scoped("agent-a", "port", 3133);
+        let _second = reg.register_scoped("agent-a", "port", 5000);
+
+        first.dispose();
+
+        assert_eq!(
+            reg.lookup(Some("agent-a"), "port"),
+            Some(Arc::new(5000)),
+            "旧 disposer 误删了后来者的作用域注册"
+        );
+        assert_eq!(reg.len(), 1);
+    }
+
+    /// 旧 disposer 触发过后，`Drop` 不再重复生效（幂等）；新注册始终在。
+    #[test]
+    fn stale_disposer_is_idempotent() {
+        let reg: Arc<ScopedRegistry<u32>> = Arc::new(ScopedRegistry::new());
+        let first = reg.register_global("port", 3132);
+        first.dispose();
+        assert!(reg.lookup(None, "port").is_none());
+
+        let _newer = reg.register_global("port", 4000);
+        assert_eq!(reg.lookup(None, "port"), Some(Arc::new(4000)));
+        assert_eq!(reg.len(), 1);
     }
 
     #[test]

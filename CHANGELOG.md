@@ -24,6 +24,28 @@
 
 `ModuleDescriptor` 同步：`entry` → `tag`。
 
+### 修复：生命周期收尾「有界」不再只是口号（含一处 breaking）
+
+上一轮的收尾逻辑只把 `invoke` 的 `result_rx` 包进 deadline：对端不读 stdin 时
+管道几十 KiB 就满，`send` 阻塞在「等可写」上，于是 `invoke` 远超它自己声明的
+`ctx.deadline_ms`；`drain` / `stop` 的无界 `Drain` 发送与无界 `shutdown` 写锁
+更是能把停止挂死（超时只丢 future，进程与写锁都还在）。
+
+- `invoke` 的预算改为**整体**：覆盖「发送 + 等结果」；
+- `drain` / `stop` 的 `deadline` 覆盖「发 `Drain` + 等模块退出 + `shutdown`」，
+  句柄侧另加 `deadline + 2s` 兜底；
+- `stdio::shutdown` 取写锁有上限（`min(deadline, 50ms)`）；拿不到、或写方向
+  留着半帧，就**强杀 + 有界收尸**（收尸超时交给后台任务，不丢 `Child`）；
+- `inproc::shutdown` 同款：模块不读通道时 `to_module` 锁被卡住的 `send` 占着，
+  取锁同样有上限，拿不到就直接 abort 模块任务（abort 后把句柄等回来）；
+- 写方向一旦写坏 / abandoned 半帧即封死（后续 `send` 一律 `Closed`），
+  绝不把新帧追加到残帧后面让对端误解析。
+
+**breaking**：删除 `impl From<(&str, Arc<Ctx>)> for Disposer`。它按 key 无条件
+删除，绕过 0.18.0 引入的所有权代次（晚到的旧 disposer 会误删新注册），且全仓
+零使用者。同类竞态一并修到 `ScopedRegistry`：全局 / 作用域条目的撤销都按代次
+校验，只撤自己那次注册。
+
 ### 修复：0.17.0 引入的 domain-agnostic 门禁失败
 
 0.17.0 给 `requires` 写文档时举了 `echo-agent.host.*` 当例子，触发了

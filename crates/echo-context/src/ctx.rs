@@ -2,6 +2,7 @@
 
 use std::any::Any;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -11,6 +12,15 @@ use crate::ServiceKey;
 
 /// One registered service, erased.
 type ErasedService = Box<dyn Any + Send + Sync>;
+
+/// 服务表条目：值 + 它的**所有权代次**。
+///
+/// 代次由注册时分配，`Disposer` 只撤销「自己那次注册」——晚到的旧
+/// disposer 不会按 key 误删后来者（重复 mount / 重挂的经典竞态）。
+struct ServiceEntry {
+    generation: u64,
+    value: ErasedService,
+}
 
 /// A service locator keyed by name.
 ///
@@ -39,7 +49,9 @@ type ErasedService = Box<dyn Any + Send + Sync>;
 /// **整个家族**内共享一个唤醒源（子等父提供的服务不会漏唤醒）。
 #[derive(Default)]
 pub struct Ctx {
-    services: RwLock<HashMap<String, ErasedService>>,
+    services: RwLock<HashMap<String, ServiceEntry>>,
+    /// 下一次注册的所有权代次（单调递增；每个 Ctx 独立）。
+    next_generation: AtomicU64,
     /// 父作用域（`None` = 根）。
     parent: Option<Arc<Ctx>>,
     /// 变更订阅者（本作用域自己的；父链的订阅者由向上传播通知）。
@@ -88,17 +100,25 @@ impl Ctx {
     /// object); it can also be a concrete `Clone + 'static` value. Returns a
     /// disposer that removes the registration.
     pub fn register<T: Any + Send + Sync>(self: &Arc<Self>, key: &str, service: T) -> Disposer {
+        let generation = self.next_generation.fetch_add(1, Ordering::Relaxed);
         self.services
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(key.to_string(), Box::new(service));
+            .insert(
+                key.to_string(),
+                ServiceEntry {
+                    generation,
+                    value: Box::new(service),
+                },
+            );
         self.publish(Change::Provided {
             key: key.to_string(),
             depth: self.depth(),
         });
         let owned = self.clone();
         let owned_key = key.to_string();
-        Disposer::from_fn(move || owned.remove_and_wake(&owned_key))
+        // 只撤销本次注册：后来者（新代次）不受旧 disposer 影响。
+        Disposer::from_fn(move || owned.remove_if_generation(&owned_key, generation))
     }
 
     /// Resolve a service by key.
@@ -116,7 +136,7 @@ impl Ctx {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             guard
                 .get(key)
-                .and_then(|boxed| boxed.downcast_ref::<T>())
+                .and_then(|entry| entry.value.downcast_ref::<T>())
                 .cloned()
         } {
             return Some(found);
@@ -173,6 +193,7 @@ impl Ctx {
     pub fn child(self: &Arc<Self>) -> Arc<Ctx> {
         Arc::new(Ctx {
             services: RwLock::new(HashMap::new()),
+            next_generation: AtomicU64::new(0),
             parent: Some(self.clone()),
             subscribers: RwLock::new(Vec::new()),
             ready: self.ready.clone(),
@@ -298,7 +319,7 @@ impl Ctx {
         key: &ServiceKey<T>,
         service: T,
     ) -> Result<Disposer, ServiceError> {
-        {
+        let generation = {
             let mut services = self
                 .services
                 .write()
@@ -308,8 +329,16 @@ impl Ctx {
                     key: key.name().to_string(),
                 });
             }
-            services.insert(key.name().to_string(), Box::new(service));
-        }
+            let generation = self.next_generation.fetch_add(1, Ordering::Relaxed);
+            services.insert(
+                key.name().to_string(),
+                ServiceEntry {
+                    generation,
+                    value: Box::new(service),
+                },
+            );
+            generation
+        };
         // 与 `register` 同款：广播给订阅者（父链向上传播）+ 唤醒等待者。
         self.publish(Change::Provided {
             key: key.name().to_string(),
@@ -317,7 +346,9 @@ impl Ctx {
         });
         let ctx = self.clone();
         let name = key.name();
-        Ok(Disposer::from_fn(move || ctx.remove_and_wake(name)))
+        Ok(Disposer::from_fn(move || {
+            ctx.remove_if_generation(name, generation)
+        }))
     }
 
     /// Resolve the service stored under a typed `key`.
@@ -332,7 +363,7 @@ impl Ctx {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             services
                 .get(key.name())
-                .and_then(|boxed| boxed.downcast_ref::<T>())
+                .and_then(|entry| entry.value.downcast_ref::<T>())
                 .cloned()
         } {
             return Some(found);
@@ -397,19 +428,22 @@ impl Ctx {
         }
     }
 
-    /// Remove `name` (if present) and wake every
-    /// [`service_or_wait`](Self::service_or_wait) waiter so it can re-check
-    /// the table.
-    fn remove_and_wake(self: &Arc<Self>, name: &str) {
+    /// 移除 `name`，但**仅当当前登记仍属于 `generation`**；否则是无操作。
+    ///
+    /// 这是 disposer 的所有权校验：晚到的旧 disposer 不会撤销后来者。
+    /// 两种情况都唤醒等待者（重查无害）；只有真的移除才广播 `Disposed`
+    /// （否则订阅者会误以为依赖消失）。
+    fn remove_if_generation(self: &Arc<Self>, name: &str, generation: u64) {
         let removed = {
             let mut services = self
                 .services
                 .write()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            services.remove(name).is_some()
+            match services.get(name) {
+                Some(entry) if entry.generation == generation => services.remove(name).is_some(),
+                _ => false,
+            }
         };
-        // 只有真的移除了才广播：`Disposer` 可能是重复生效的空操作，
-        // 那不该让订阅者做一次无意义的重新核对。
         if removed {
             self.publish(Change::Disposed {
                 key: name.to_string(),
@@ -469,18 +503,6 @@ impl Drop for Disposer {
         if let Some(f) = self.inner.take() {
             f();
         }
-    }
-}
-
-impl From<(&str, Arc<Ctx>)> for Disposer {
-    fn from((key, ctx): (&str, Arc<Ctx>)) -> Self {
-        let key = key.to_string();
-        Self::from_fn(move || {
-            ctx.services
-                .write()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .remove(&key);
-        })
     }
 }
 
@@ -567,6 +589,27 @@ mod tests {
         // The earlier disposer is now a no-op (key already gone).
         drop(_d1);
         assert!(!ctx.contains("port"));
+    }
+
+    /// 所有权代次：旧注册的 disposer **不得**撤销后来者。
+    ///
+    /// 典型来源：同一模块被重复挂载 / 重挂时，旧 disposer 晚于新注册生效。
+    /// 没有代次校验时，它按 key 无条件删除，会把新服务一并撤掉。
+    #[test]
+    fn stale_disposer_does_not_remove_newer_registration() {
+        let ctx = Arc::new(Ctx::default());
+        let old = ctx.register::<u32>("port", 1);
+        let new = ctx.register::<u32>("port", 2);
+
+        drop(old);
+        assert_eq!(
+            ctx.resolve::<u32>("port"),
+            Some(2),
+            "旧 disposer 撤销了新注册"
+        );
+
+        drop(new);
+        assert!(!ctx.contains("port"), "最新 disposer 仍应撤销自己的注册");
     }
 
     // ---- strongly-typed ServiceKey API --------------------------------------

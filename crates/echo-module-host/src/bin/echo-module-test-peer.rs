@@ -19,6 +19,11 @@
 //!   验证宿主侧 `read_exact` 容忍「长度先到、帧体后到」）；
 //! - `--stay-alive`：无视 stdin EOF 与 Drain 退出，持续存活
 //!   （验证宿主 `shutdown` 超时后的强杀路径）。
+//! - `--no-stdin-read`：**握手完成后不再读 stdin**，直接驻留。宿主后续的写
+//!   会把 64 KiB 管道填满，`send` 因此阻塞在「等管道可写」上——这是「invoke
+//!   的整体 deadline」与「停止有界」用例的确定性阻塞源（不靠时序碰运气）。
+//! - `--pid-file <path>`：启动时把本进程 pid 写入该文件（供用例断言
+//!   「停止后没有残留进程」）。
 //!
 //! 环境：若设置 `ECHO_MODULE_TEST_PEER_TAG`，`Ready` 后额外回一条 `Emit`
 //! `peer/env`，携带 tag、子进程环境变量个数与 PATH 存在性（供最小环境断言）。
@@ -38,9 +43,23 @@ use serde_json::{json, Value};
 const MAX_FRAME_BYTES: u32 = 16 * 1024 * 1024;
 
 fn main() {
-    let split = std::env::args().any(|arg| arg == "--split-frames");
-    let stay_alive = std::env::args().any(|arg| arg == "--stay-alive");
+    let args: Vec<String> = std::env::args().collect();
+    let split = args.iter().any(|arg| arg == "--split-frames");
+    let stay_alive = args.iter().any(|arg| arg == "--stay-alive");
+    let no_stdin_read = args.iter().any(|arg| arg == "--no-stdin-read");
     let env_tag = std::env::var("ECHO_MODULE_TEST_PEER_TAG").ok();
+
+    // pid 文件：写在最前面，用例在宿主握手成功后立刻就能读到。
+    if let Some(path) = args
+        .iter()
+        .position(|arg| arg == "--pid-file")
+        .and_then(|index| args.get(index + 1))
+    {
+        if let Err(e) = std::fs::write(path, std::process::id().to_string()) {
+            eprintln!("test peer: cannot write pid file {path}: {e}");
+            std::process::exit(2);
+        }
+    }
     // 最近一次 `Hello` 的 config（`show_config` 回显用）。
     let mut config = Value::Null;
 
@@ -64,6 +83,11 @@ fn main() {
             HostToModule::Hello(hello) => {
                 config = hello.config.clone();
                 on_hello(&mut writer, &hello, split);
+                if no_stdin_read {
+                    // 握手完成后**不再读 stdin**：宿主写满管道后 `send` 阻塞，
+                    // 用「停止有界 / 调用有界」的用例就有了确定性阻塞。
+                    park_forever();
+                }
                 if let Some(tag) = &env_tag {
                     let payload = json!({
                         "tag": tag,

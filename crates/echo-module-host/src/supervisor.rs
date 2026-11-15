@@ -16,8 +16,13 @@
 //!   缺省 [`DEFAULT_INVOKE_TIMEOUT_MS`]）发 `Cancel` 并返回
 //!   `Error{code:"timeout"}`；[`ModuleHandle::cancel`] 为尽力通知（结果仍以
 //!   模块回发的 `InvokeResult` 为准，`Error{code:"cancelled"}` 原样透传）。
+//!   **这个预算是整体的**：同时覆盖「把 `Invoke` 帧写进连接」与「等结果」。
+//!   只包住等结果是不够的——对端不读 stdin 时管道写满，`send` 会一直等可写。
 //! - **排空**：Draining → `Drain{deadline_ms}` → 等通道关闭（或 deadline）→
-//!   `connection.shutdown()` → Stopped。
+//!   `connection.shutdown()` → 按连接代际结算剩余在途调用
+//!   （`Error{code:"drained"}`）→ Stopped。**每一步都在同一个 deadline 内**
+//!   （`Drain` 的发送也受剩余预算约束）；`shutdown` 的实现在写方向被卡住的
+//!   `send` 占着 / 留有半帧时直接强杀子进程，因此「停止有界」是端到端的。
 //! - **热替换**（[`ModuleHandle::upgrade`]）：以同一 transport + 新 config 启动
 //!   新实例（握手沿用 [`HANDSHAKE_TIMEOUT`]）→ 握手成功后原子切换 `shared.conn`
 //!   （invoke 自此走新实例；期间旧实例持续服务，state 保持 Ready）→ 对旧实例发
@@ -28,7 +33,7 @@
 //!   监督循环以 `biased` 优先处理控制消息；升级与排空互斥（串行），升级期间
 //!   旧连接的消息留在运输层缓冲，由后续循环迭代或旧实例排空流程照常分发
 //!   （Emit / Log / 在途 InvokeResult 不丢；切换前已发给旧实例且未在排空期内
-//!   应答的在途调用将等到自身超时——已知限制）。
+//!   应答的在途调用以 `Error{code:"replaced"}` 结算，不再等自身超时）。
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -57,6 +62,22 @@ const CONTROL_CAPACITY: usize = 16;
 
 /// 热替换握手失败后，关闭新实例的宽限期（`shutdown` 尽力；超时即强杀）。
 const FAILED_INSTANCE_SHUTDOWN_GRACE: Duration = Duration::from_secs(1);
+
+/// 「尽力通知取消」的单次发送预算（fire-and-forget 任务内）。
+///
+/// `Cancel` 是**尽力**通知：它既不该占用调用方已耗尽的 deadline，也不该
+/// 无限期占着连接的写方向（对端不读 stdin 时 `send` 会一直等管道可写）。
+const CANCEL_SEND_BUDGET: Duration = Duration::from_millis(100);
+
+/// 排空流程里每一步的最小预算切片（避免 `timeout(0)` 的边界语义）。
+const MIN_DRAIN_SLICE: Duration = Duration::from_millis(1);
+
+/// `drain` / `stop` 等监督任务应答的额外宽限。
+///
+/// 监督任务自己的排空流程已被 `deadline` 约束（Drain 发送 / 等模块退出 /
+/// `shutdown` 全在预算内），这里只兜「请求排在别的串行操作后面」与调度抖动。
+/// 没有它，句柄侧的 `ack_rx.await` 是无界的——监督任务一旦卡住，调用方跟着挂。
+const DRAIN_ACK_GRACE: Duration = Duration::from_secs(2);
 
 /// 模块生命周期状态。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -343,40 +364,76 @@ impl ModuleHandle {
         self.shared.generation.load(Ordering::SeqCst)
     }
 
+    /// 当前在途调用数：已登记、尚未收到结果 / 超时 / 生命周期结算的调用。
+    ///
+    /// 这是观测值，不参与控制流。**调用方丢弃 `invoke` future 后该值应回落**
+    /// ——丢弃即撤销登记，不随调用方放弃而泄漏（见 `invoke` 的取消语义）。
+    pub fn in_flight_calls(&self) -> usize {
+        self.shared
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
+    }
+
     /// 排空：state=Draining → 发 `Drain{deadline_ms}` → 等待模块通道关闭
     /// （或 deadline）→ `connection.shutdown()` → state=Stopped。
     ///
     /// 已 Stopped / Failed（监督任务已退出）时直接 `Ok(())`（幂等）。
-    /// 若 shutdown 超时，仍置 Stopped 并返回 `Err(Timeout)`。
+    /// 若 `shutdown` 没能优雅关停（模块不退出 / 写方向卡住 / 留有半帧），
+    /// 仍置 Stopped 并返回 `Err(Timeout)`——但**进程一定已被强杀**，
+    /// 不是「超时就算」。
+    ///
+    /// `deadline` 是**整个排空流程**的预算（Drain 发送 + 等模块退出 +
+    /// `shutdown`），不是每一步各一份。句柄侧等待另加 2s 宽限
+    /// （`DRAIN_ACK_GRACE`），监督任务出故障时也不会挂住调用方。
+    ///
+    /// 连接关停后，该连接上未应答的在途调用以 `Error{code:"drained"}` 结算
+    /// （不按各自的 600s 默认超时挂住）。
     pub async fn drain(&self, deadline: Duration) -> Result<(), TransportError> {
         match self.shared.state() {
             ModuleState::Stopped | ModuleState::Failed(_) => return Ok(()),
             _ => {}
         }
         let (ack_tx, ack_rx) = oneshot::channel();
-        if self
-            .shared
-            .ctl
-            .send(Control::Drain {
+        let budget = deadline + DRAIN_ACK_GRACE;
+        // 请求本身也在预算内排队：监督任务串行处理 drain / upgrade，队列满时
+        // `send` 会等；这里给 `deadline` + 宽限，不让调用方无限等。
+        let queued = tokio::time::timeout(
+            budget,
+            self.shared.ctl.send(Control::Drain {
                 deadline,
                 ack: ack_tx,
-            })
-            .await
-            .is_err()
-        {
-            // 监督任务已退出（正常路径：已 Stopped / Failed）：视为完成。
-            if !matches!(
-                self.shared.state(),
-                ModuleState::Failed(_) | ModuleState::Stopped
-            ) {
-                self.shared.set_state(ModuleState::Stopped);
+            }),
+        )
+        .await;
+        match queued {
+            Ok(Ok(())) => {}
+            Ok(Err(_)) => {
+                // 监督任务已退出（正常路径：已 Stopped / Failed）：视为完成。
+                if !matches!(
+                    self.shared.state(),
+                    ModuleState::Failed(_) | ModuleState::Stopped
+                ) {
+                    self.shared.set_state(ModuleState::Stopped);
+                }
+                return Ok(());
             }
-            return Ok(());
+            Err(_) => {
+                tracing::warn!(
+                    module = %self.shared.module_id,
+                    "drain request could not be queued within budget"
+                );
+                return Err(TransportError::Timeout);
+            }
         }
-        match ack_rx.await {
-            Ok(res) => res,
+        match tokio::time::timeout(budget, ack_rx).await {
+            Ok(Ok(res)) => res,
             // 监督任务在应答前退出（不应发生）：按已停止处理。
-            Err(_) => Ok(()),
+            Ok(Err(_)) => Ok(()),
+            // 自有的排空流程已被 deadline 约束；走到这里说明监督任务本身卡住
+            // （排空流程之外的故障）。返回 Timeout，调用方不会永远挂住。
+            Err(_) => Err(TransportError::Timeout),
         }
     }
 
@@ -391,22 +448,31 @@ impl ModuleHandle {
     /// （把它从失败态收敛成干净的停止态，便于随后 start 重试）。
     pub async fn stop(&self, deadline: Duration) -> Result<(), TransportError> {
         let (ack_tx, ack_rx) = oneshot::channel();
-        if self
-            .shared
-            .ctl
-            .send(Control::Stop {
+        let budget = deadline + DRAIN_ACK_GRACE;
+        let queued = tokio::time::timeout(
+            budget,
+            self.shared.ctl.send(Control::Stop {
                 deadline,
                 ack: ack_tx,
-            })
-            .await
-            .is_err()
-        {
+            }),
+        )
+        .await;
+        match queued {
             // 监督任务已不在（终态 Drain 之后）：视为已停止。
-            return Ok(());
+            Ok(Err(_)) => return Ok(()),
+            Err(_) => {
+                tracing::warn!(
+                    module = %self.shared.module_id,
+                    "stop request could not be queued within budget"
+                );
+                return Err(TransportError::Timeout);
+            }
+            Ok(Ok(())) => {}
         }
-        match ack_rx.await {
-            Ok(res) => res,
-            Err(_) => Ok(()),
+        match tokio::time::timeout(budget, ack_rx).await {
+            Ok(Ok(res)) => res,
+            Ok(Err(_)) => Ok(()),
+            Err(_) => Err(TransportError::Timeout),
         }
     }
 
@@ -476,23 +542,34 @@ impl ModuleHandle {
             return Err(not_ready_error(&state));
         }
         let (ack_tx, ack_rx) = oneshot::channel();
-        if self
-            .shared
-            .ctl
-            .send(Control::Upgrade {
+        // 句柄侧等待也要有界：新实例握手（`HANDSHAKE_TIMEOUT`）+ 旧实例排空
+        // （`timeout`）+ 排队/调度宽限。监督任务自己在这三段里都是有界的，
+        // 这个上限只是不让调用方在监督任务出故障时无限挂住。
+        let budget = timeout + HANDSHAKE_TIMEOUT + DRAIN_ACK_GRACE;
+        let queued = tokio::time::timeout(
+            budget,
+            self.shared.ctl.send(Control::Upgrade {
                 config,
                 timeout,
                 expected_contributions,
                 ack: ack_tx,
-            })
-            .await
-            .is_err()
-        {
-            return Err(self.upgrade_unavailable_error());
+            }),
+        )
+        .await;
+        match queued {
+            Ok(Err(_)) | Err(_) => return Err(self.upgrade_unavailable_error()),
+            Ok(Ok(())) => {}
         }
-        match ack_rx.await {
-            Ok(res) => res,
-            Err(_) => Err(self.upgrade_unavailable_error()),
+        match tokio::time::timeout(budget, ack_rx).await {
+            Ok(Ok(res)) => res,
+            Ok(Err(_)) => Err(self.upgrade_unavailable_error()),
+            Err(_) => {
+                tracing::warn!(
+                    module = %self.shared.module_id,
+                    "upgrade did not answer within the lifecycle budget"
+                );
+                Err(self.upgrade_unavailable_error())
+            }
         }
     }
 
@@ -524,11 +601,16 @@ impl ModuleHandle {
     ///
     /// - `call_id = <module_id>:<自增序号>`（从 1 开始），登记在途表等待
     ///   `InvokeResult`；
-    /// - 超时 = `ctx.deadline_ms` 或默认 [`DEFAULT_INVOKE_TIMEOUT_MS`]；超时后
-    ///   发送 `Cancel` 并返回 `Error{code:"timeout"}`；
+    /// - 超时 = `ctx.deadline_ms` 或默认 [`DEFAULT_INVOKE_TIMEOUT_MS`]；这个预算
+    ///   **覆盖发送与等待**（`Invoke` 帧写不完也算超时）；超时后尽力发 `Cancel`
+    ///   并返回 `Error{code:"timeout"}`；
     /// - 模块回发的任何结果（含 `Error{code:"cancelled"}`）原样返回；
+    /// - 生命周期结算：连接被排空 / 被热替换换下时，仍未应答的调用以
+    ///   `Error{code:"drained"}` / `Error{code:"replaced"}` 结束（按登记时的
+    ///   连接代际区分，新实例的在途调用不受影响）；
+    /// - 调用方丢弃本 future（取消等待）会撤销在途登记，不泄漏 pending；
     /// - 模块不可用时的错误码：`stopped` / `failed` / `draining` / `not_ready` /
-    ///   `module_crashed` / `transport_error`。
+    ///   `module_crashed` / `transport_error` / `drained` / `replaced`。
     pub async fn invoke(
         &self,
         contribution: &str,
@@ -639,12 +721,20 @@ struct Shared {
     events: Mutex<Vec<(String, Value)>>,
     /// 事件缓冲满后丢弃的事件数（封顶保护的可观测性）。
     dropped_events: AtomicU64,
-    /// 当前连接（None = 未启动 / 重启中 / 已停）。
-    conn: Mutex<Option<Arc<dyn ModuleConnection>>>,
+    /// 当前连接 + 它的代际（同一把锁内成对更新，invoke 取到的
+    /// `(generation, conn)` 不会一新一旧）。`None` = 未启动 / 重启中 / 已停。
+    conn: Mutex<Option<ActiveConn>>,
     /// 控制通道（drain / upgrade 请求）。
     ctl: mpsc::Sender<Control>,
     /// 宿主服务注册表（P2 HostCall 回呼路由）。
     host_services: Arc<HostServiceRegistry>,
+}
+
+/// 一条就绪的连接及其代际。
+struct ActiveConn {
+    /// 连接代际（与 [`Shared::generation`] 同步）。
+    generation: u64,
+    conn: Arc<dyn ModuleConnection>,
 }
 
 /// 在途调用。
@@ -652,6 +742,28 @@ struct PendingCall {
     result_tx: oneshot::Sender<InvokeOutcome>,
     /// 是否收到过 [`ModuleHandle::cancel`] 标记（仅记录；结果仍以模块回发为准）。
     cancel_requested: bool,
+    /// 登记时所在连接的代际：生命周期结算按它区分「旧实例的在途调用」
+    /// 与「换代后新实例的在途调用」。
+    generation: u64,
+}
+
+/// 在途登记的 RAII 撤销器：`invoke` future 被调用方丢弃时移除登记，
+/// 不把 pending 留给模块的（可能永远不来的）结果。
+struct PendingGuard<'a> {
+    shared: &'a Shared,
+    call_id: String,
+}
+
+impl Drop for PendingGuard<'_> {
+    fn drop(&mut self) {
+        if self.shared.remove_pending(&self.call_id).is_some() {
+            tracing::debug!(
+                module = %self.shared.module_id,
+                call_id = %self.call_id,
+                "invoke future dropped; in-flight call removed"
+            );
+        }
+    }
 }
 
 /// 监督控制命令。
@@ -831,24 +943,41 @@ impl Shared {
         )
     }
 
-    fn current_conn(&self) -> Option<Arc<dyn ModuleConnection>> {
+    /// 当前连接及其代际（同一把锁内成对读出）。
+    fn active_conn(&self) -> Option<(u64, Arc<dyn ModuleConnection>)> {
         self.conn
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+            .as_ref()
+            .map(|active| (active.generation, Arc::clone(&active.conn)))
+    }
+
+    fn current_conn(&self) -> Option<Arc<dyn ModuleConnection>> {
+        self.active_conn().map(|(_, conn)| conn)
+    }
+
+    /// 给定代际 / 连接是否仍是当前活动连接（`invoke` 登记后复查用）。
+    fn is_active(&self, generation: u64, conn: &Arc<dyn ModuleConnection>) -> bool {
+        self.active_conn()
+            .is_some_and(|(current_generation, current)| {
+                current_generation == generation && Arc::ptr_eq(&current, conn)
+            })
     }
 
     /// 替换当前连接；新连接就绪（`Some`）= 新一代：`generation` 自增
     /// （泛化 01a §1.3——首次启动 / 崩溃重启 / 热替换三处均经本函数）。
+    ///
+    /// `conn` 与它的代际在同一把锁内成对写入：`invoke` 不会读到
+    /// 「新代际 + 旧连接」这种错配。
     fn set_conn(&self, conn: Option<Arc<dyn ModuleConnection>>) {
-        let live = conn.is_some();
-        *self
+        let mut slot = self
             .conn
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = conn;
-        if live {
-            self.generation.fetch_add(1, Ordering::SeqCst);
-        }
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *slot = conn.map(|conn| ActiveConn {
+            generation: self.generation.fetch_add(1, Ordering::SeqCst) + 1,
+            conn,
+        });
     }
 
     fn insert_pending(&self, call_id: String, call: PendingCall) {
@@ -865,20 +994,41 @@ impl Shared {
             .remove(call_id)
     }
 
-    /// 崩溃：全部在途调用以 `module_crashed` 结束。
-    fn fail_pending_calls(&self, reason: &str) {
-        let drained: Vec<(String, PendingCall)> = self
-            .pending
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .drain()
-            .collect();
-        for (call_id, call) in drained {
+    /// 按连接代际结算在途调用：只结束登记在 `generation` 及更早连接上的
+    /// 调用，换代后新实例的调用不受影响。
+    ///
+    /// `code` 是稳定的错误码（线格式）；`reason` 说明发生了什么。返回结算
+    /// 条数（调用方用于日志）。锁内只摘除登记，回执在锁外发送。
+    fn fail_pending_upto(&self, generation: u64, code: &str, reason: &str) -> usize {
+        let expired = {
+            let mut pending = self
+                .pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let ids: Vec<String> = pending
+                .iter()
+                .filter(|(_, call)| call.generation <= generation)
+                .map(|(call_id, _)| call_id.clone())
+                .collect();
+            let mut expired = Vec::with_capacity(ids.len());
+            for call_id in ids {
+                if let Some(call) = pending.remove(&call_id) {
+                    expired.push((call_id, call));
+                }
+            }
+            expired
+        };
+        let settled = expired.len();
+        for (call_id, call) in expired {
             let _ = call.result_tx.send(InvokeOutcome::Error {
-                code: "module_crashed".to_string(),
-                message: format!("{reason} while call {call_id} was in flight"),
+                code: code.to_string(),
+                message: format!(
+                    "{reason} while call {call_id} was in flight on connection generation {}",
+                    call.generation
+                ),
             });
         }
+        settled
     }
 
     async fn invoke(
@@ -895,7 +1045,7 @@ impl Shared {
             ModuleState::Draining => return outcome_error("draining", "module is draining"),
             _ => {}
         }
-        let Some(conn) = self.current_conn() else {
+        let Some((generation, conn)) = self.active_conn() else {
             return outcome_error("not_ready", "module is not ready (starting or restarting)");
         };
 
@@ -910,8 +1060,22 @@ impl Shared {
             PendingCall {
                 result_tx,
                 cancel_requested: false,
+                generation,
             },
         );
+        // RAII：调用方丢弃本 future（取消等待）时撤销登记，不留 pending。
+        let _pending_guard = PendingGuard {
+            shared: self,
+            call_id: call_id.clone(),
+        };
+        // 登记后复查：若连接在「取连接 → 登记」窗口内换代 / 关闭，本次调用
+        // 没有可靠的送达对象。撤销登记并按未就绪返回，而不是等 600s 超时。
+        if !self.is_active(generation, &conn) {
+            return outcome_error(
+                "not_ready",
+                "module connection changed before the call was sent",
+            );
+        }
 
         let msg = HostToModule::Invoke(Invoke {
             call_id: call_id.clone(),
@@ -919,18 +1083,41 @@ impl Shared {
             ctx: ctx.clone(),
             payload,
         });
-        if let Err(e) = conn.send(msg).await {
-            self.remove_pending(&call_id);
-            let code = if matches!(e, TransportError::Closed) {
-                "module_crashed"
-            } else {
-                "transport_error"
-            };
-            return outcome_error(code, format!("failed to send invoke: {e}"));
+        // **整体 deadline**：调用方的预算同时覆盖「发送」与「等结果」。
+        // 发送本身会阻塞——对端不读 stdin 时管道写满，`send` 就一直等可写；
+        // 只把 `result_rx` 包进 timeout 会让 invoke 远远超出调用方给的 deadline
+        // （实测可无限挂住）。
+        let deadline_ms = ctx.deadline_ms.unwrap_or(DEFAULT_INVOKE_TIMEOUT_MS);
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(deadline_ms);
+
+        match tokio::time::timeout_at(deadline, conn.send(msg)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                self.remove_pending(&call_id);
+                let code = if matches!(e, TransportError::Closed) {
+                    "module_crashed"
+                } else {
+                    "transport_error"
+                };
+                return outcome_error(code, format!("failed to send invoke: {e}"));
+            }
+            Err(_) => {
+                // 发送阶段就用完预算：帧可能只送出去一部分（半帧留在连接内，
+                // 取消安全契约）。摘登记后尽力通知取消——取消通知走
+                // fire-and-forget，不占用调用方已耗尽的预算。
+                self.remove_pending(&call_id);
+                spawn_cancel(&conn, &self.module_id, &call_id);
+                return outcome_error(
+                    "timeout",
+                    format!(
+                        "invoke timed out after {deadline_ms}ms while sending the request \
+                         (module is not reading its stdin?)"
+                    ),
+                );
+            }
         }
 
-        let deadline_ms = ctx.deadline_ms.unwrap_or(DEFAULT_INVOKE_TIMEOUT_MS);
-        match tokio::time::timeout(Duration::from_millis(deadline_ms), result_rx).await {
+        match tokio::time::timeout_at(deadline, result_rx).await {
             Ok(Ok(outcome)) => outcome,
             Ok(Err(_)) => {
                 // 结果通道被提前丢弃（不应发生；防御性处理）。
@@ -938,52 +1125,51 @@ impl Shared {
                 outcome_error("module_crashed", "invoke result channel closed")
             }
             Err(_) => {
-                // 超时：先摘除在途表，再尽力通知对端取消。
+                // 超时：先摘除在途表，再尽力通知对端取消（不阻塞调用方）。
                 self.remove_pending(&call_id);
-                if let Err(e) = conn
-                    .send(HostToModule::Cancel(Cancel {
-                        call_id: call_id.clone(),
-                    }))
-                    .await
-                {
-                    tracing::debug!(module = %self.module_id, call_id = %call_id, error = %e, "failed to deliver timeout cancel");
-                }
+                spawn_cancel(&conn, &self.module_id, &call_id);
                 outcome_error("timeout", format!("invoke timed out after {deadline_ms}ms"))
             }
         }
     }
 
     fn cancel(&self, call_id: &str) {
-        let marked = match self
-            .pending
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get_mut(call_id)
-        {
-            Some(call) => {
+        let generation = {
+            let mut pending = self
+                .pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            pending.get_mut(call_id).map(|call| {
                 call.cancel_requested = true;
-                true
-            }
-            None => false,
+                call.generation
+            })
         };
-        if !marked {
-            tracing::debug!(module = %self.module_id, call_id = %call_id, "cancel for unknown/finished call");
-        }
-        if let Some(conn) = self.current_conn() {
-            let call_id = call_id.to_string();
-            let module_id = self.module_id.clone();
-            // fire-and-forget：尽力送达（结果仍以模块回发为准）。
-            tokio::spawn(async move {
-                if let Err(e) = conn
-                    .send(HostToModule::Cancel(Cancel {
-                        call_id: call_id.clone(),
-                    }))
-                    .await
-                {
-                    tracing::debug!(module = %module_id, call_id = %call_id, error = %e, "failed to deliver cancel");
+        // 已知在途调用：只把 Cancel 投给登记时那一代连接（换代后的新实例
+        // 不认识这个 call_id）。未知 / 已结束的调用保留老的「尽力通知」语义：
+        // 发给当前连接，由模块自行忽略。
+        let target = match generation {
+            Some(generation) => match self.active_conn() {
+                Some((active_generation, conn)) if active_generation == generation => Some(conn),
+                _ => {
+                    tracing::debug!(
+                        module = %self.module_id,
+                        call_id = %call_id,
+                        generation,
+                        "cancel target connection was replaced; not delivered"
+                    );
+                    None
                 }
-            });
-        }
+            },
+            None => {
+                tracing::debug!(module = %self.module_id, call_id = %call_id, "cancel for unknown/finished call");
+                self.current_conn()
+            }
+        };
+        let Some(conn) = target else {
+            return;
+        };
+        // fire-and-forget：尽力送达（结果仍以模块回发为准），发送有界。
+        spawn_cancel(&conn, &self.module_id, call_id);
     }
 }
 
@@ -992,6 +1178,31 @@ fn outcome_error(code: &str, message: impl Into<String>) -> InvokeOutcome {
         code: code.to_string(),
         message: message.into(),
     }
+}
+
+/// 尽力通知对端取消：**fire-and-forget + 有界发送**。
+///
+/// 两件事不能省：一是不阻塞调用方（此时调用方的 deadline 已经耗尽），
+/// 二是不让这个后台发送无限期攥着连接的写方向——对端不读 stdin 时
+/// `send` 会一直等管道可写，任务就永远不结束。
+fn spawn_cancel(conn: &Arc<dyn ModuleConnection>, module_id: &str, call_id: &str) {
+    let conn = Arc::clone(conn);
+    let module_id = module_id.to_string();
+    let call_id = call_id.to_string();
+    tokio::spawn(async move {
+        let send = conn.send(HostToModule::Cancel(Cancel {
+            call_id: call_id.clone(),
+        }));
+        match tokio::time::timeout(CANCEL_SEND_BUDGET, send).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                tracing::debug!(module = %module_id, call_id = %call_id, error = %e, "failed to deliver cancel");
+            }
+            Err(_) => {
+                tracing::debug!(module = %module_id, call_id = %call_id, "cancel not delivered within budget");
+            }
+        }
+    });
 }
 
 /// 监督任务主体：握手 → 消息循环（含崩溃重启 / 排空 / 热替换）。
@@ -1043,7 +1254,7 @@ async fn supervise(
                 }
             }
         }
-        let Some(conn) = shared.current_conn() else {
+        let Some((generation, conn)) = shared.active_conn() else {
             // 不应发生（阶段 A 出来必有连接）；防御性收尾。
             shared.set_state(ModuleState::Stopped);
             return;
@@ -1060,7 +1271,22 @@ async fn supervise(
             Step::Msg(Ok(msg)) => dispatch(&shared, &conn, msg),
             Step::Msg(Err(e)) => {
                 tracing::warn!(module = %shared.module_id, error = %e, "module connection lost; treating as crash");
-                shared.fail_pending_calls("module connection lost");
+                // 先断开当前代连接，再按代结算：结算后不会有新调用把登记
+                // 加回这条死连接（invoke 的登记后复查会看到 None）。
+                shared.set_conn(None);
+                let settled = shared.fail_pending_upto(
+                    generation,
+                    "module_crashed",
+                    "module connection lost",
+                );
+                if settled > 0 {
+                    tracing::warn!(
+                        module = %shared.module_id,
+                        settled,
+                        generation,
+                        "settled in-flight calls after connection loss"
+                    );
+                }
                 match restart_after_crash(&shared, transport.as_ref(), &spec, &mut ctl_rx).await {
                     Restart::Restarted => {}
                     // 可逆停止：监督任务留着，回阶段 A 等 Start。
@@ -1381,21 +1607,45 @@ async fn await_start_command(
     }
 }
 
-/// 排空：发 Drain → 等通道关闭（或 deadline）→ shutdown。
+/// 排空：发 Drain → 等通道关闭（或 deadline）→ shutdown → 按代结算剩余在途调用。
+///
+/// 结算发生在 `shutdown` 之后：此时该连接已不可能再送回结果，剩余登记的
+/// 调用会以 `Error{code:"drained"}` 明确结束，而不是等各自的默认超时
+/// （[`DEFAULT_INVOKE_TIMEOUT_MS`]）。
 async fn drain_connection(shared: &Arc<Shared>, deadline: Duration) -> Result<(), TransportError> {
-    let Some(conn) = shared.current_conn() else {
+    let Some((generation, conn)) = shared.active_conn() else {
         return Ok(()); // 重启中等：无连接可排空
     };
     let started = tokio::time::Instant::now();
     shared.set_state(ModuleState::Draining);
 
-    if let Err(e) = conn
-        .send(HostToModule::Drain(Drain {
+    // 剩余预算（每次现算，最小 1ms：`timeout(0)` 语义容易读错）。
+    let remaining = || {
+        deadline
+            .saturating_sub(started.elapsed())
+            .max(MIN_DRAIN_SLICE)
+    };
+
+    // `Drain` 帧本身也在预算内：对端不读 stdin 时 `send` 会阻塞在管道写入上，
+    // 无界的 `send` 会让「停止有界」直接破功（整条排空永远走不到 shutdown）。
+    match tokio::time::timeout(
+        remaining(),
+        conn.send(HostToModule::Drain(Drain {
             deadline_ms: deadline.as_millis() as u64,
-        }))
-        .await
+        })),
+    )
+    .await
     {
-        tracing::debug!(module = %shared.module_id, error = %e, "failed to deliver Drain");
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            tracing::debug!(module = %shared.module_id, error = %e, "failed to deliver Drain");
+        }
+        Err(_) => {
+            tracing::warn!(
+                module = %shared.module_id,
+                "drain request not delivered within budget; shutting down anyway"
+            );
+        }
     }
 
     // 等待模块主动退出（通道关闭），期间照常分发消息（在途结果 / 事件 / 日志）。
@@ -1405,14 +1655,21 @@ async fn drain_connection(shared: &Arc<Shared>, deadline: Duration) -> Result<()
             dispatch(shared, &conn, msg);
         }
     };
-    let remaining = deadline.saturating_sub(started.elapsed());
-    let _ = tokio::time::timeout(remaining, wait).await;
+    let _ = tokio::time::timeout(remaining(), wait).await;
 
-    let remaining = deadline
-        .saturating_sub(started.elapsed())
-        .max(Duration::from_millis(1));
-    let res = conn.shutdown(remaining).await;
+    // `shutdown` 的实现自己保证有界（写锁被卡住 → 强杀），这里给的是剩余预算。
+    let res = conn.shutdown(remaining()).await;
+    // 先摘连接再结算：结算后新 invoke 的登记后复查会看到无连接而自行撤销。
     shared.set_conn(None);
+    let settled = shared.fail_pending_upto(generation, "drained", "module was drained");
+    if settled > 0 {
+        tracing::warn!(
+            module = %shared.module_id,
+            settled,
+            generation,
+            "settled in-flight calls when the connection was drained"
+        );
+    }
     res
 }
 
@@ -1437,7 +1694,7 @@ async fn upgrade_instance(
     if state != ModuleState::Ready {
         return Err(not_ready_error(&state));
     }
-    let Some(old_conn) = shared.current_conn() else {
+    let Some((old_generation, old_conn)) = shared.active_conn() else {
         // 防御性：Ready 态必有连接。
         return Err(not_ready_error(&ModuleState::Pending));
     };
@@ -1503,28 +1760,52 @@ async fn upgrade_instance(
     shared.hot_replaces.fetch_add(1, Ordering::SeqCst);
     tracing::info!(module = %shared.module_id, "upgrade: traffic switched to replacement instance");
 
-    drain_retired(shared, &old_conn, timeout).await;
+    drain_retired(shared, &old_conn, old_generation, timeout).await;
     Ok(())
 }
 
 /// 排空被热替换下来的旧实例：`Drain{deadline_ms: timeout}` → 等其通道关闭
 /// （或 deadline；期间照常分发 Emit / Log / 在途 InvokeResult）→
-/// `shutdown(剩余时间)` 兜底强杀。
+/// `shutdown(剩余时间)` 兜底强杀 → 按**旧代**结算剩余在途调用。
 ///
-/// 旧实例的退出结果（优雅 / 强杀）不影响热替换结果：流量已在新实例上。
-async fn drain_retired(shared: &Arc<Shared>, conn: &Arc<dyn ModuleConnection>, timeout: Duration) {
+/// 结算只覆盖 `generation` 及更早的连接：切换后新实例的调用（新代）不会
+/// 被误伤。旧实例的退出结果（优雅 / 强杀）不影响热替换结果：流量已在新实例上。
+async fn drain_retired(
+    shared: &Arc<Shared>,
+    conn: &Arc<dyn ModuleConnection>,
+    generation: u64,
+    timeout: Duration,
+) {
     let started = tokio::time::Instant::now();
-    if let Err(e) = conn
-        .send(HostToModule::Drain(Drain {
+    // 与 `drain_connection` 同款：`Drain` 发送也受剩余预算约束（对端不读
+    // stdin 时无界 `send` 会把「换下旧实例」永远卡住）。
+    let remaining = || {
+        timeout
+            .saturating_sub(started.elapsed())
+            .max(MIN_DRAIN_SLICE)
+    };
+    match tokio::time::timeout(
+        remaining(),
+        conn.send(HostToModule::Drain(Drain {
             deadline_ms: timeout.as_millis() as u64,
-        }))
-        .await
+        })),
+    )
+    .await
     {
-        tracing::debug!(
-            module = %shared.module_id,
-            error = %e,
-            "upgrade: failed to deliver Drain to retired instance"
-        );
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            tracing::debug!(
+                module = %shared.module_id,
+                error = %e,
+                "upgrade: failed to deliver Drain to retired instance"
+            );
+        }
+        Err(_) => {
+            tracing::warn!(
+                module = %shared.module_id,
+                "upgrade: Drain not delivered to retired instance within budget; shutting it down anyway"
+            );
+        }
     }
 
     let wait = async {
@@ -1532,13 +1813,9 @@ async fn drain_retired(shared: &Arc<Shared>, conn: &Arc<dyn ModuleConnection>, t
             dispatch(shared, conn, msg);
         }
     };
-    let remaining = timeout.saturating_sub(started.elapsed());
-    let _ = tokio::time::timeout(remaining, wait).await;
+    let _ = tokio::time::timeout(remaining(), wait).await;
 
-    let remaining = timeout
-        .saturating_sub(started.elapsed())
-        .max(Duration::from_millis(1));
-    match conn.shutdown(remaining).await {
+    match conn.shutdown(remaining()).await {
         Ok(()) => tracing::info!(
             module = %shared.module_id,
             "upgrade: retired instance drained and exited"
@@ -1548,6 +1825,21 @@ async fn drain_retired(shared: &Arc<Shared>, conn: &Arc<dyn ModuleConnection>, t
             error = %e,
             "upgrade: retired instance killed after drain deadline"
         ),
+    }
+
+    // 旧实例已关停：它上面的在途调用不会再有结果。按旧代结算。
+    let settled = shared.fail_pending_upto(
+        generation,
+        "replaced",
+        "module instance was replaced during upgrade",
+    );
+    if settled > 0 {
+        tracing::warn!(
+            module = %shared.module_id,
+            settled,
+            generation,
+            "upgrade: settled in-flight calls of the retired instance"
+        );
     }
 }
 

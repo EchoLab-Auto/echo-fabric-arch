@@ -144,7 +144,11 @@ pub fn load(profile_path: &Path) -> Result<LoadedTree, LoadError> {
     // 同一路径要排除：有人直接以 `modules-base.toml` 作为 profile 时，
     // 不排除会把同一份文件应用两遍（第二次把第一次的行整体替换，结果
     // 只是浪费，但 layer 编号与来源会错）。
-    if profile_path.file_name().map(|n| n != BASE_FILE_NAME).unwrap_or(true) {
+    if profile_path
+        .file_name()
+        .map(|n| n != BASE_FILE_NAME)
+        .unwrap_or(true)
+    {
         let base_path = base_dir.join(BASE_FILE_NAME);
         if base_path.is_file() {
             composer.apply(read_doc(&base_path)?, layer, BASE_FILE_NAME);

@@ -6,6 +6,10 @@
 //!
 //! `run` 返回（或任务被 abort）视为模块退出：宿主侧 `recv` 观察为
 //! [`TransportError::Closed`]，`send` 同样返回 [`TransportError::Closed`]。
+//!
+//! 关停是**有界**的，即使模块不再读通道（通道写满 → 宿主侧 `send` 卡在
+//! `Sender::send` 上、一直占着 `to_module` 锁）也一样：见
+//! `InprocConnection::shutdown`。
 
 use std::future::Future;
 use std::pin::Pin;
@@ -20,6 +24,10 @@ use crate::transport::{ModuleConnection, ModuleSpec, Transport, TransportError};
 
 /// 每个方向的消息通道容量。
 pub const CHANNEL_CAPACITY: usize = 64;
+
+/// 关停时等 `to_module` 锁的**上限**：拿不到就说明有 `send` 卡在「通道满」
+/// 上（模块不再读），此时关不掉发送端，直接 abort 模块任务。
+const TO_MODULE_LOCK_GRACE: Duration = Duration::from_millis(50);
 
 /// 模块实现体：`run` 结束时视为模块退出。
 pub trait InprocModule: Send {
@@ -108,26 +116,46 @@ impl ModuleConnection for InprocConnection {
         rx.recv().await.ok_or(TransportError::Closed)
     }
 
-    /// 关停语义：
+    /// 关停语义（**整体有界**）：
     /// 1. 丢弃宿主 → 模块 sender（模块侧 `recv` 得到 `None`，应自行结束）；
     /// 2. 等待模块任务结束，最多 `deadline`；
     /// 3. 超时 → `abort()` 强杀任务并返回 [`TransportError::Timeout`]（类比子进程轨
     ///    的 SIGKILL；此后模块视为已退出）。
     ///
+    /// 第 1 步可能被卡住：模块不再读通道时通道很快写满，宿主侧某个 `send`
+    /// 会一直等在 `Sender::send` 上并**占着 `to_module` 锁**。旧实现无条件
+    /// `lock().await`，于是关停被一个读不动的模块永久挂住。现在取锁有上限
+    /// （[`TO_MODULE_LOCK_GRACE`]）：拿不到就跳过「优雅关发送端」，直接 abort
+    /// ——任务被 abort 会释放接收端，卡住的 `send` 随即以 `Closed` 失败并放锁。
+    ///
     /// 重复调用：第二次直接 `Ok(())`（无任务可等）。
     async fn shutdown(&self, deadline: Duration) -> Result<(), TransportError> {
-        self.to_module.lock().await.take();
+        let closed_gracefully =
+            match tokio::time::timeout(deadline.min(TO_MODULE_LOCK_GRACE), self.to_module.lock())
+                .await
+            {
+                Ok(mut slot) => {
+                    slot.take();
+                    true
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        "module channel is full and a send is stuck; skipping the graceful close"
+                    );
+                    false
+                }
+            };
+
         let mut task = match self.task.lock().await.take() {
             Some(task) => task,
             None => return Ok(()),
         };
-        let res = tokio::time::timeout(deadline, &mut task).await;
-        match res {
-            Ok(_) => Ok(()),
-            Err(_) => {
-                task.abort();
-                Err(TransportError::Timeout)
-            }
+        if closed_gracefully && tokio::time::timeout(deadline, &mut task).await.is_ok() {
+            return Ok(());
         }
+        // 强杀：abort 后把句柄等回来，确保任务真的结束（不留后台残骸）。
+        task.abort();
+        let _ = task.await;
+        Err(TransportError::Timeout)
     }
 }

@@ -819,7 +819,10 @@ enabled = false
     let tools = entry(&tree, "tools");
     assert!(!tools.enabled, "profile 的 enabled 生效");
     assert_eq!(tools.layer, 1, "生效的是 profile 那一层");
-    assert!(entry(&tree, "skills").enabled, "未被覆盖的基线行保持自己的开关");
+    assert!(
+        entry(&tree, "skills").enabled,
+        "未被覆盖的基线行保持自己的开关"
+    );
 }
 
 /// 基线里的配置对 profile 不可见：整行替换不保留任何字段（同 patch 语义）。
