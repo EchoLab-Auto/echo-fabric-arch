@@ -3,9 +3,9 @@
 //!
 //! 职责划分：
 //! - [`launch_specs`]：从 [`echo_module_loader::LoadedTree`] 中筛选
-//!   `enabled == true` 且 `kind == Stdio` 的条目，转成 [`LaunchSpec`]；
-//!   builtin / dylib / wasm（非本运输层）与 disabled 条目连同原因进入第二个
-//!   返回值（人可读，供日志 / 诊断）。
+//!   `enabled == true` 且**有外部产物**（`kind` 为 `stdio` 或 `dylib`）的条目，
+//!   转成 [`LaunchSpec`]；builtin / wasm（非本运输层）与 disabled 条目连同
+//!   原因进入第二个返回值（人可读，供日志 / 诊断）。
 //! - [`start_modules`]：**best-effort** 逐个启动——单个模块失败（spawn 失败 /
 //!   握手超时等）不阻断其余模块，失败记入 [`StartedModules::errors`]。
 //! - [`start_from_file`]：`load(path)` + [`start_modules`] 一步到位。
@@ -28,16 +28,28 @@ use serde_json::Value;
 
 use echo_module_loader::{EntryKind, LoadedTree};
 
+use crate::dylib::DylibTransport;
 use crate::stdio::{ResourceLimits, StdioTransport};
 use crate::supervisor::{ModuleHandle, ModuleSupervisor};
-use crate::transport::ModuleSpec;
+use crate::transport::{ModuleSpec, Transport};
 
-/// 一个可启动的 stdio 模块实例（由 `modules.toml` 的一个条目翻译而来）。
+/// 模块以什么运输层接入：独立产物跑在子进程里，还是插入本进程。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LaunchKind {
+    /// 独立可执行文件（`serve_stdio`）：有崩溃隔离，代价是每模块一个进程。
+    Stdio,
+    /// 动态库（`serve_fd_blocking`）：独立产物**且**同进程，没有崩溃隔离。
+    Dylib,
+}
+
+/// 一个可启动的外部模块实例（由 `modules.toml` 的一个条目翻译而来）。
 #[derive(Debug, Clone)]
 pub struct LaunchSpec {
     /// 宿主侧模块实例 id（Hello/Welcome 握手比对；同一棵树内唯一）。
     pub module_id: String,
-    /// 可执行文件路径（loader 已校验非空）。
+    /// 运输层形态（由 `kind` 决定）。
+    pub kind: LaunchKind,
+    /// 启动产物路径：stdio 是可执行文件，dylib 是 `.so`（loader 已校验非空）。
     pub command: String,
     /// 追加命令行参数。
     pub args: Vec<String>,
@@ -49,14 +61,13 @@ pub struct LaunchSpec {
     pub limits: Option<echo_module_loader::ModuleLimits>,
 }
 
-/// 从合成树中筛选可启动的 stdio 实例。
+/// 从合成树中筛选可启动的外部模块实例（`stdio` 与 `dylib`）。
 ///
 /// 返回 `(specs, skipped)`：`skipped` 是跳过原因（人可读），形如
 /// `"websearch: kind builtin skipped"` / `"x: disabled"` /
 /// `"y: stdio without command skipped"`。
 ///
-/// stdio 条目缺 `command` 不应出现（loader 已校验），如遇手工构造的树
-/// 则跳过并记录。
+/// 缺 `command` 不应出现（loader 已校验），如遇手工构造的树则跳过并记录。
 pub fn launch_specs(tree: &LoadedTree) -> (Vec<LaunchSpec>, Vec<String>) {
     let mut specs = Vec::new();
     let mut skipped = Vec::new();
@@ -65,21 +76,26 @@ pub fn launch_specs(tree: &LoadedTree) -> (Vec<LaunchSpec>, Vec<String>) {
             skipped.push(format!("{}: disabled", entry.id));
             continue;
         }
-        if entry.kind != EntryKind::Stdio {
+        let kind = match entry.kind {
+            EntryKind::Stdio => LaunchKind::Stdio,
+            EntryKind::Dylib => LaunchKind::Dylib,
+            other => {
+                skipped.push(format!("{}: kind {} skipped", entry.id, other.as_str()));
+                continue;
+            }
+        };
+        let Some(command) = entry.command.as_deref().filter(|c| !c.trim().is_empty()) else {
+            // 防御性分支：loader 校验过的树不会走到这里。
             skipped.push(format!(
-                "{}: kind {} skipped",
+                "{}: {} without command skipped",
                 entry.id,
                 entry.kind.as_str()
             ));
             continue;
-        }
-        let Some(command) = entry.command.as_deref().filter(|c| !c.trim().is_empty()) else {
-            // 防御性分支：loader 校验过的树不会走到这里。
-            skipped.push(format!("{}: stdio without command skipped", entry.id));
-            continue;
         };
         specs.push(LaunchSpec {
             module_id: entry.id.clone(),
+            kind,
             command: command.to_string(),
             args: entry.args.clone(),
             env: entry.env.clone(),
@@ -137,18 +153,36 @@ pub async fn start_modules(
     let mut handles = Vec::new();
     let mut errors = Vec::new();
     for spec in specs {
-        let mut transport = StdioTransport::new(&spec.command).with_args(&spec.args);
-        for (key, value) in &spec.env {
-            transport = transport.with_env(key, value);
-        }
-        if let Some(limits) = spec.limits {
-            transport = transport.with_limits(resource_limits(limits));
-        }
         let module_spec = ModuleSpec {
             module_id: spec.module_id.clone(),
             config: spec.config.clone(),
         };
-        match supervisor.start(module_spec, Box::new(transport)).await {
+        let transport: Box<dyn Transport> = match spec.kind {
+            LaunchKind::Stdio => {
+                let mut transport = StdioTransport::new(&spec.command).with_args(&spec.args);
+                for (key, value) in &spec.env {
+                    transport = transport.with_env(key, value);
+                }
+                if let Some(limits) = spec.limits {
+                    transport = transport.with_limits(resource_limits(limits));
+                }
+                Box::new(transport)
+            }
+            LaunchKind::Dylib => {
+                // `args` / `env` / `limits` 对 dylib 无意义：模块不是子进程，没有
+                // 自己的命令行与环境，也没有可施加 rlimit 的独立进程。配置了也
+                // 不报错（同一份配置要能在两种形态间切换），但要说出来——
+                // 静默忽略会让人以为限额生效了。
+                if !spec.args.is_empty() || !spec.env.is_empty() || spec.limits.is_some() {
+                    tracing::warn!(
+                        module = %spec.module_id,
+                        "dylib module ignores `args` / `env` / `[module.limits]` (it is not a process)"
+                    );
+                }
+                Box::new(DylibTransport::new(&spec.command))
+            }
+        };
+        match supervisor.start(module_spec, transport).await {
             Ok(handle) => {
                 tracing::info!(module = %handle.module_id(), "module started");
                 handles.push(handle);

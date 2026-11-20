@@ -4,6 +4,8 @@
 //! - [`transport`]：运输层抽象（[`transport::Transport`] / [`transport::ModuleConnection`]）；
 //! - [`inproc`]：in-proc 参考实现 [`inproc::InprocTransport`]（类型直连，零序列化）；
 //! - [`stdio`]：子进程实现 [`stdio::StdioTransport`]（4 字节小端长度前缀 + JSON）；
+//! - [`dylib`]：动态库实现 [`dylib::DylibTransport`]（**独立产物 + 同进程**：
+//!   模块编译成 `.so`，运行期经 socketpair 插入宿主进程，没有崩溃隔离）；
 //! - [`supervisor`]：模块生命周期监督 [`supervisor::ModuleSupervisor`]
 //!   （握手 / 贡献注册 / 调用 / 取消 / 排空 / 崩溃重启）；
 //!
@@ -19,6 +21,8 @@
 pub use echo_module_api as api;
 
 pub mod bootstrap;
+pub mod dylib;
+mod frames;
 pub mod host_service;
 pub mod inproc;
 pub mod stdio;
@@ -28,7 +32,10 @@ pub mod transport;
 /// 实现 [`AsyncHostService`] 需要 `#[async_trait]` 宏；这里re-export，
 /// 让宿主不必为此单独加一次依赖（与 `echo-module-sdk` 的做法一致）。
 pub use async_trait::async_trait;
-pub use bootstrap::{launch_specs, start_from_file, start_modules, LaunchSpec, StartedModules};
+pub use bootstrap::{
+    launch_specs, start_from_file, start_modules, LaunchKind, LaunchSpec, StartedModules,
+};
+pub use dylib::{DylibConnection, DylibTransport};
 pub use host_service::{AsyncHostService, CallContext, HostService, HostServiceRegistry};
 pub use inproc::{InprocIo, InprocModule, InprocTransport};
 pub use stdio::{StdioConnection, StdioTransport};

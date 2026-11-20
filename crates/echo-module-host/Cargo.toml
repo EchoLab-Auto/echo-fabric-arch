@@ -27,3 +27,6 @@ path = "src/bin/echo-module-test-peer.rs"
 # 子进程资源限额（setrlimit）：CPU / 地址空间 / 文件大小 / 打开文件数。
 # 只在 Unix 生效——限额本身是 POSIX 概念，其它平台跳过（见 `stdio::ResourceLimits`）。
 libc = { workspace = true }
+# `dlopen` 动态库模块（`dylib` 运输层）。只用它载入库与取符号；入口签名是
+# 一个 C 函数指针（见 `dylib::ENTRY_SYMBOL`），没有 Rust 类型过 FFI。
+libloading = { workspace = true }

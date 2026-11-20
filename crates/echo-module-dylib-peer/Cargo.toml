@@ -1,0 +1,24 @@
+[package]
+name = "echo-module-dylib-peer"
+description = "测试夹具：把 echo-module-sdk 的模块打包成 cdylib（.so），供 dylib 运输层验收使用。不是可发布的模块。"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+# 夹具，不是可发布的包。
+publish = false
+
+[lib]
+# cdylib = 宿主 dlopen 的产物；rlib 让 workspace 内的 `cargo check` 也能编它
+# （只有 cdylib 时某些工具链的 check 路径会跳过条目）。
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+echo-module-sdk = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+# `whoami` 需要 gettid（报告线程 id，宿主据此核对"同进程"与"线程已退出"）。
+libc = { workspace = true }

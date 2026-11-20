@@ -13,6 +13,8 @@ members = [
     # 示例：证明框架可被任何 Rust 应用使用（M4 的证伪测试）
     "examples/minimal-host",
     "examples/minimal-module",
+    # 测试夹具：模块的 cdylib 产物（`dylib` 运输层验收用；`publish = false`）
+    "crates/echo-module-dylib-peer",
 ]
 
 [workspace.package]
@@ -47,6 +49,9 @@ dashmap = "6"
 
 # 子进程资源限额（setrlimit）：仅 Unix 生效，见 `echo-module-host::stdio`。
 libc = "0.2"
+
+# 动态库模块（dylib 运输层）：见 `echo-module-host::dylib`。
+libloading = "0.8"
 
 # 本仓内部 crate
 echo-context = { path = "crates/echo-context" }

@@ -40,7 +40,10 @@ use crate::api::{HostToModule, ModuleToHost};
 use crate::transport::{ModuleConnection, ModuleSpec, Transport, TransportError};
 
 /// 单帧上限（16 MiB）。读侧长度前缀与写侧序列化结果均受此约束。
-pub const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
+///
+/// 定义在 [`crate::frames`]（与 dylib 运输层共用同一份真值），这里再导出是为了
+/// 保住既有 `stdio::MAX_FRAME_BYTES` 的公开路径。
+pub use crate::frames::MAX_FRAME_BYTES;
 
 /// 关停时等写方向锁的**上限**：拿不到就说明有 `send` 卡在管道写入里
 /// （对端不读 stdin），此时强杀是唯一有界的出路。
@@ -335,9 +338,9 @@ impl StdioConnection {
         }
 
         loop {
-            if buf.len() >= 4 {
-                let len = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
-                if len > MAX_FRAME_BYTES {
+            match crate::frames::step(buf) {
+                crate::frames::Step::Incomplete => {}
+                crate::frames::Step::Fatal { len } => {
                     // 长度前缀本身不可信 → 帧边界丢失，后续字节无法再解释。
                     *poisoned = true;
                     buf.clear();
@@ -345,12 +348,10 @@ impl StdioConnection {
                         "frame length {len} exceeds limit {MAX_FRAME_BYTES}"
                     )));
                 }
-                if buf.len() >= 4 + len {
-                    let decoded = serde_json::from_slice(&buf[4..4 + len]);
+                crate::frames::Step::Frame { consumed, decoded } => {
                     // 帧边界完整才消费缓冲；解码失败不破坏边界。
-                    buf.drain(..4 + len);
-                    return decoded
-                        .map_err(|e| TransportError::Protocol(format!("invalid JSON frame: {e}")));
+                    buf.drain(..consumed);
+                    return decoded;
                 }
             }
 
@@ -378,14 +379,7 @@ impl StdioConnection {
     /// `broken`，之后所有 `send` 直接 `Closed`——绝不把新帧追加到半帧后面
     /// 让对端误解析。
     async fn write_frame(&self, msg: &HostToModule) -> Result<(), TransportError> {
-        let body = serde_json::to_vec(msg)
-            .map_err(|e| TransportError::Protocol(format!("encode message: {e}")))?;
-        if body.len() > MAX_FRAME_BYTES {
-            return Err(TransportError::Protocol(format!(
-                "frame length {} exceeds limit {MAX_FRAME_BYTES}",
-                body.len()
-            )));
-        }
+        let frame = crate::frames::encode(msg)?;
 
         let mut guard = self.writer.lock().await;
         if guard.broken || guard.stdin.is_none() {
@@ -398,11 +392,7 @@ impl StdioConnection {
         guard.offset = 0;
 
         // 本帧：先登记再写；取消后由下一次 send 续写。
-        guard.frame.reserve(4 + body.len());
-        guard
-            .frame
-            .extend_from_slice(&(body.len() as u32).to_le_bytes());
-        guard.frame.extend_from_slice(&body);
+        guard.frame = frame;
         write_pending(&mut guard).await?;
         guard.frame.clear();
         guard.offset = 0;

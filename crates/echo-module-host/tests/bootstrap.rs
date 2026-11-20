@@ -54,6 +54,7 @@ fn entry(id: &str, kind: EntryKind, enabled: bool) -> ModuleEntry {
 fn spec(module_id: &str, command: &str) -> LaunchSpec {
     LaunchSpec {
         module_id: module_id.to_string(),
+        kind: echo_module_host::bootstrap::LaunchKind::Stdio,
         command: command.to_string(),
         args: vec![],
         env: BTreeMap::new(),

@@ -12,7 +12,9 @@ pub enum EntryKind {
     Builtin,
     /// Standalone process speaking the module protocol over stdio.
     Stdio,
-    /// Dynamically loaded library (experimental track).
+    /// Dynamically loaded library: an independent artifact (`.so`) inserted into
+    /// the host process at run time, speaking the same framing protocol over a
+    /// socketpair. No crash isolation — see `echo-module-host::dylib`.
     Dylib,
     /// WebAssembly module (experimental track).
     Wasm,
@@ -43,7 +45,8 @@ pub struct ModuleEntry {
     pub kind: EntryKind,
     /// For `builtin`: the module id to mount; for `stdio`: the executable name.
     pub name: String,
-    /// Executable path; required (non-empty) when `kind == Stdio`.
+    /// Launch artifact path: an executable for `stdio`, a `.so` for `dylib`.
+    /// Required (non-empty) for both; ignored by `builtin` / `wasm`.
     pub command: Option<String>,
     /// Extra command-line arguments.
     pub args: Vec<String>,

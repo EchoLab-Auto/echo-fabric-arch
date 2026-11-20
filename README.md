@@ -35,20 +35,24 @@
 读法：用 `Disposer` 保证可撤销，用 `Ctx` 表达依赖，用 `Scope` 表达归属，用
 `EventBus` 表达通知，用运输层决定这些发生在进程内还是进程外。
 
-## 两种形态
+## 三种形态
 
-| | 进程内（`InprocTransport`） | 进程外（`StdioTransport`） |
-|---|---|---|
-| 模块是 | 编译进宿主的 Rust 对象 | 独立二进制，stdin/stdout |
-| 调用开销 | 零序列化 | 每帧一次 JSON |
-| 崩溃影响 | 带崩宿主 | 隔离；supervisor 退避重启 |
-| 语言 | 只能 Rust | 任意语言 |
-| 适合 | 同团队、同步发布、热路径 | 第三方、高权限、可能失控 |
+同一份 `ModuleHandler` 代码，打包方式决定形态：
+
+| | 进程内（`InprocTransport`） | 进程外（`StdioTransport`） | 动态库（`DylibTransport`） |
+|---|---|---|---|
+| 模块是 | 编译进宿主的 Rust 对象 | 独立二进制，stdin/stdout | 独立 `.so`，`dlopen` 进宿主 |
+| 独立产物 | ✗ | ✓ | ✓ |
+| 同进程 | ✓ | ✗ | ✓ |
+| 调用开销 | 零序列化 | 每帧一次 JSON | 每帧一次 JSON + syscall |
+| 崩溃影响 | 带崩宿主 | 隔离；supervisor 退避重启 | 带崩宿主 |
+| 语言 | 只能 Rust | 任意语言 | 只能 Rust |
+| 适合 | 同团队、同步发布、热路径 | 第三方、高权限、可能失控 | 独立发布但不想多进程 |
 
 ## 跑起来
 
 ```bash
-cargo test --workspace        # 236 项，全绿
+cargo test --workspace        # 全绿
 cargo build -p minimal-module && cargo run -p minimal-host
 # ✅ 全部断言通过——这套框架可以在非 EchoAgent 的宿主里独立使用
 ```

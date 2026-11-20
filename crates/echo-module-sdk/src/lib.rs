@@ -50,10 +50,23 @@
 //! 泛型核心 [`serve_io`] / [`serve_io_with`] 供测试 / 内嵌运输复用
 //! （如 `tokio::io::duplex`）。
 //!
+//! ## 三种产物形态，同一份模块代码
+//!
+//! | 形态 | 入口 | 独立产物 | 崩溃隔离 |
+//! |---|---|---|---|
+//! | 独立进程 | [`serve_stdio`] | ✓ | ✓ |
+//! | 编进宿主（builtin） | 直接构造 | ✗ | ✗ |
+//! | 动态库 | [`serve_fd_blocking`]（cdylib 的 `echo_module_run`） | ✓ | ✗ |
+//!
+//! 三者跑的是**同一套协议**，所以模块作者只写一遍 [`ModuleHandler`]，形态由
+//! 打包方式决定，不需要改代码。
+//!
 //! 约定：帧只走 stdout，模块自身的日志请走 stderr。
 
 #![warn(missing_docs)]
 
+#[cfg(unix)]
+mod dylib_entry;
 mod error;
 mod frame;
 mod serve;
@@ -61,6 +74,8 @@ mod serve;
 mod tests;
 
 pub use async_trait::async_trait;
+#[cfg(unix)]
+pub use dylib_entry::{serve_fd_blocking, EXIT_ERROR, EXIT_OK, EXIT_PANIC};
 pub use echo_module_api;
 pub use echo_module_api::{capabilities, Contribution, InvokeContext, InvokeOutcome};
 pub use frame::MAX_FRAME_BYTES;

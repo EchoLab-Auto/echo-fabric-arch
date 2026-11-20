@@ -287,7 +287,10 @@ fn validate(entries: &[ModuleEntry]) -> Result<(), LoadError> {
     }
 
     for entry in entries {
-        if entry.kind == EntryKind::Stdio {
+        // `command` 对两种"外部产物"都是必须的：stdio 是可执行文件路径，
+        // dylib 是 `.so` 路径。缺了都起不来，所以在装载期就点名，而不是等到
+        // 宿主启动时才报一个"找不到空路径"。
+        if matches!(entry.kind, EntryKind::Stdio | EntryKind::Dylib) {
             let has_command = entry
                 .command
                 .as_deref()
@@ -295,8 +298,9 @@ fn validate(entries: &[ModuleEntry]) -> Result<(), LoadError> {
             if !has_command {
                 return Err(LoadError::Validation {
                     message: format!(
-                        "module `{}` (kind = \"stdio\") requires a non-empty `command`",
-                        entry.id
+                        "module `{}` (kind = \"{}\") requires a non-empty `command`",
+                        entry.id,
+                        entry.kind.as_str()
                     ),
                 });
             }
