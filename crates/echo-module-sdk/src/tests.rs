@@ -809,3 +809,77 @@ async fn configure_rejection_fails_handshake() {
         .expect("no panic");
     assert!(result.is_err());
 }
+
+// ── Emit：模块主动上报（不经宿主调用）──────────────────────────────────────
+
+/// `HostClient::emit` 让模块**主动**推事件。此前 SDK 只给了回呼（HostCall，
+/// 有请求-响应），没有"投递即忘"的出口——协议里的 `ModuleToHost::Emit` 只能
+/// 由模块自己手写帧发出，等于逼每个模块各造一遍编码。
+#[tokio::test]
+async fn module_can_emit_events_through_the_client() {
+    let (mut session, stored) = start_host_call_session();
+    send(&mut session, hello(PROTOCOL_VERSION)).await;
+    // Welcome / Register / Ready
+    assert!(matches!(recv(&mut session).await, ModuleToHost::Welcome(_)));
+    assert!(matches!(
+        recv(&mut session).await,
+        ModuleToHost::Register(_)
+    ));
+    assert!(matches!(recv(&mut session).await, ModuleToHost::Ready));
+
+    let client = stored
+        .lock()
+        .expect("client lock poisoned")
+        .clone()
+        .expect("on_ready 应交付句柄");
+    assert!(
+        client.emit("probe.tick", json!({"n": 7})),
+        "emit 应成功入队"
+    );
+
+    match recv(&mut session).await {
+        ModuleToHost::Emit(emit) => {
+            assert_eq!(emit.event, "probe.tick");
+            assert_eq!(emit.payload, json!({"n": 7}));
+        }
+        other => panic!("expected Emit, got {other:?}"),
+    }
+
+    // 连接还在：emit 是投递即忘，不影响后续帧的写出。
+    assert!(
+        client.emit("probe.tick2", json!({"n": 8})),
+        "第二次 emit 也应成功"
+    );
+    match recv(&mut session).await {
+        ModuleToHost::Emit(emit) => assert_eq!(emit.event, "probe.tick2"),
+        other => panic!("expected 第二条 Emit, got {other:?}"),
+    }
+}
+
+/// 会话结束后句柄仍可调用，但 `emit` 应返回 `false`（连接已关闭）而不是 panic。
+#[tokio::test]
+async fn emit_after_shutdown_reports_closed() {
+    let (mut session, stored) = start_host_call_session();
+    send(&mut session, hello(PROTOCOL_VERSION)).await;
+    assert!(matches!(recv(&mut session).await, ModuleToHost::Welcome(_)));
+    assert!(matches!(
+        recv(&mut session).await,
+        ModuleToHost::Register(_)
+    ));
+    assert!(matches!(recv(&mut session).await, ModuleToHost::Ready));
+
+    send(&mut session, HostToModule::Dispose).await;
+    let _ = tokio::time::timeout(TIMEOUT, session.task)
+        .await
+        .expect("session should finish");
+
+    let client = stored
+        .lock()
+        .expect("client lock poisoned")
+        .clone()
+        .expect("on_ready 应交付句柄");
+    assert!(
+        !client.emit("probe.after_shutdown", json!({})),
+        "连接关闭后 emit 必须返回 false（弱引用已失效）"
+    );
+}

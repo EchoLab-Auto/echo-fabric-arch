@@ -4,6 +4,22 @@
 但每一处都记在这里。`PROTOCOL_VERSION` 是**线上契约**版本，与 crate 版本独立
 （判定规则见 [README](./README.md#版本与兼容)）。
 
+## [0.19.2] — 未发布（新增能力：模块主动上报事件）
+
+### 新增：`HostClient::emit` —— 模块可以主动推事件了
+
+协议里的 `ModuleToHost::Emit` 一直存在，宿主侧也一直在收（supervisor 的
+`take_events` 队列），但 **SDK 没给模块任何出口**：`ModuleHandler` 只有
+`on_ready(HostClient)`，而 `HostClient` 只有请求-响应的 `call`。模块想上报
+"我这里发生了宿主没有调用过的事"（状态广播、后台任务完成、外部推送），
+只能自己手写帧编码——每个模块各造一遍。
+
+现在 `HostClient::emit(event, payload) -> bool`：投递即忘，返回是否成功入队
+（连接关闭 → `false`，不 panic）。句柄仍由 `on_ready` 交付，没有新增 trait
+方法，**不 breaking**。
+
+宿主侧频率限制照旧（supervisor 默认 2000/s，超限丢弃并计数）。
+
 ## [0.19.1] — 未发布（修正：文本块可寻址）
 
 ### 修复：外部模块的文本块此前永远取不到内容

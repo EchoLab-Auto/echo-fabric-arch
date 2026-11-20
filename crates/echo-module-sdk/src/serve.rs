@@ -6,8 +6,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use echo_module_api::{
-    compatible, Failure, HostCall, HostCallOutcome, HostToModule, InvokeOutcome, InvokeResult,
-    ModuleToHost, Register, Welcome, PROTOCOL_NAME, PROTOCOL_VERSION,
+    compatible, Emit, Failure, HostCall, HostCallOutcome, HostToModule, InvokeOutcome,
+    InvokeResult, ModuleToHost, Register, Welcome, PROTOCOL_NAME, PROTOCOL_VERSION,
 };
 use serde_json::Value;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
@@ -122,6 +122,30 @@ impl HostClient {
                     .remove(&call_id);
                 Err(HostCallError::Timeout)
             }
+        }
+    }
+
+    /// 主动上报一条事件（`ModuleToHost::Emit`）。
+    ///
+    /// **投递即忘**：不等回执，返回是否成功入队（`false` = 连接已关闭）。
+    /// 宿主侧按 `ModuleEvent` 转到前端，或由宿主自己解释——名字与载荷都是
+    /// 模块与宿主约定的词汇，框架只搬运。
+    ///
+    /// 用途：模块内部发生的、宿主**没有主动调用**的变化（状态广播、后台任务
+    /// 完成、外部来源的推送）。有请求-响应的场景请用 [`Self::call`]。
+    ///
+    /// 注意宿主可能对 `Emit` 做频率限制（`echo-module-host` 的 supervisor
+    /// 默认 2000/s，超限丢弃并计数）——批量推送时自行聚合，别一条一帧。
+    pub fn emit(&self, event: impl Into<String>, payload: Value) -> bool {
+        let Ok(frame) = encode_frame(&ModuleToHost::Emit(Emit {
+            event: event.into(),
+            payload,
+        })) else {
+            return false;
+        };
+        match self.tx.upgrade() {
+            Some(tx) => tx.send(frame).is_ok(),
+            None => false,
         }
     }
 }
