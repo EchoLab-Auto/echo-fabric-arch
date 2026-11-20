@@ -282,13 +282,13 @@ fn target_name_covers_exactly_the_addressable_variants() {
             None,
         ),
         (
+            // 文本块按 key 寻址：声明在 Register，内容由宿主按 key 拉取。
             Contribution::Text(TextBlockContribution {
                 key: "blk".into(),
                 label: String::new(),
                 order: 0,
             }),
-            None,
-            // 文本块是"宿主来取"而不是"宿主来调"，所以不参与寻址。
+            Some("blk"),
         ),
         (Contribution::Events(EventContribution::default()), None),
     ];

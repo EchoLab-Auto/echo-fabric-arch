@@ -72,8 +72,15 @@ impl Contribution {
         match self {
             Contribution::Service(service) => Some(&service.key),
             Contribution::Command(command) => Some(&command.name),
-            // 文本块是"宿主来取"而不是"宿主来调"（拉模式），不参与寻址。
-            Contribution::Text(_) => None,
+            // 文本块**也参与寻址**：声明（键 / 标题 / 顺序）在 `Register` 里一次
+            // 交给宿主，内容由宿主按 key 拉——这是"声明与执行分离"的直接后果。
+            //
+            // 2026-11 修正：此前这里返回 `None`，理由是"文本块是拉模式，不参与
+            // 寻址"。但**拉取通道只有进程内一条腿**（`Module::text_block_content`
+            // 同步闭包），跨进程没有对等物，于是外部模块声明的文本块根本无法被
+            // 读到——宿主只能看到声明，永远取不到内容。把 key 作为寻址名补上
+            // 那条腿，语义上与 `Command`（声明名字、执行在模块侧）完全同构。
+            Contribution::Text(block) => Some(&block.key),
             Contribution::Events(_) => None,
             Contribution::Custom { name, .. } => {
                 if name.is_empty() {

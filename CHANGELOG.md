@@ -4,6 +4,26 @@
 但每一处都记在这里。`PROTOCOL_VERSION` 是**线上契约**版本，与 crate 版本独立
 （判定规则见 [README](./README.md#版本与兼容)）。
 
+## [0.19.1] — 未发布（修正：文本块可寻址）
+
+### 修复：外部模块的文本块此前永远取不到内容
+
+`Contribution::target_name()` 对 `Text` 返回 `None`，注释理由是"文本块是宿主
+来取而不是宿主来调（拉模式），不参与寻址"。但**拉取通道只有进程内一条腿**
+（`Module::text_block_content` 同步闭包），跨进程没有对等物——于是外部模块
+声明的文本块，宿主只能看到声明（键 / 标题 / 顺序），永远取不到内容。
+
+2026-11 实测（清单模块的独立产物形态）：宿主按 key 发 `Invoke`，被 SDK 以
+`unknown contribution` 拒绝，因为该 key 不在可寻址集合里。
+
+现在 `Text` 返回 `Some(&block.key)`：声明在 `Register` 里一次交给宿主，内容
+由宿主按 key 拉取——与 `Command`（声明名字、执行在模块侧）完全同构。
+
+- **无 breaking**：此前 `Text` 完全不可寻址，没有任何模块依赖过它的
+  `None`；`PROTOCOL_VERSION` 不变。
+- 宿主侧的消费方式不变（仍是 `collect_text_blocks` 的语义），只是跨进程那条
+  腿现在通了。
+
 ## [0.19.0] — 未发布（新增能力，无 breaking）
 
 ### 新增：`dylib` 运输层——独立产物 + 同进程
