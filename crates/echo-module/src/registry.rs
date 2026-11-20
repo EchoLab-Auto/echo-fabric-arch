@@ -294,6 +294,13 @@ pub struct ModuleRegistry {
     /// 模块 id → 「定义从哪来 / 怎么启动」（展示用；见
     /// [`ModuleRegistry::set_definition`]）。
     definitions: std::sync::Mutex<BTreeMap<String, ModuleDefinition>>,
+    /// 模块 id → **模块自述身份**（协议 `Register.manifest`，运行时才拿得到）。
+    ///
+    /// 为什么需要一层覆盖：外部模块在目录里只有一份"合成身份"（id + 命令 +
+    /// 运输形态），因为构造目录时还没握手。握手之后模块自己会说它是什么
+    /// （`kind` / `package` / `requires` / `provides`），那时才知道该按哪套
+    /// 作用域门控它、挂在哪个包下。这里存下来，由 [`Self::descriptors`] 应用。
+    identity_claims: std::sync::Mutex<BTreeMap<String, crate::ModuleManifest>>,
     /// 本注册表所属的**树作用域**（弱引用；`ModuleScope` 建时注入）。
     ///
     /// 用弱引用是为了不制造 `scope → registry → scope` 的 Arc 环：作用域
@@ -1274,6 +1281,11 @@ impl ModuleRegistry {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
+        let claims = self
+            .identity_claims
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         let errors = self
             .errors
             .lock()
@@ -1308,6 +1320,20 @@ impl ModuleRegistry {
                     d.command = definition.command.clone();
                     d.args = definition.args.clone();
                     d.env_keys = definition.env_keys.clone();
+                }
+                // 自述身份覆盖：模块在握手里说了自己是什么时，以它为准。
+                // **只覆盖身份字段**——`enabled`（宿主配置）/ `state`（监督器）
+                // / 定义（配置来源）都保持上面的值，它们是宿主的事实。
+                if let Some(claim) = claims.get(&id) {
+                    d.name = claim.name.clone();
+                    d.version = claim.version.clone();
+                    d.description = claim.description.clone();
+                    d.kind = claim.kind.clone();
+                    d.tag = claim.tag.clone();
+                    d.author = claim.author.clone();
+                    d.builtin = claim.builtin;
+                    d.runtime = claim.runtime.as_str().to_string();
+                    d.package = claim.package_id().to_string();
                 }
                 out.push(d);
             }
@@ -1377,6 +1403,20 @@ impl ModuleRegistry {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(id.into(), definition);
+    }
+
+    /// 记录模块**自述身份**（协议 `Register.manifest` 转成的清单）。
+    ///
+    /// 只对外部模块（stdio / dylib）有意义：内置模块的身份在编译期就定了，
+    /// 没有握手这回事。宿主在拿到 [`crate::ModuleHandle::manifest_claim`] 后
+    /// 调用一次；不调用 = 描述符沿用目录里那份合成身份。
+    ///
+    /// 传 `None` 与不调用等价（模块没自述身份）。
+    pub fn set_identity_claim(&self, id: impl Into<String>, claim: crate::ModuleManifest) {
+        self.identity_claims
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(id.into(), claim);
     }
 
     /// 记录模块装配/启动失败原因（组合根在启动子进程 / 装载数据模块后写入）。
@@ -1778,6 +1818,72 @@ mod tests {
             reg.descriptors()[0].error.as_deref(),
             Some("spawn failed: No such file or directory")
         );
+    }
+
+    /// 自述身份覆盖 descriptor 的**身份字段**，但不碰宿主的事实字段。
+    ///
+    /// 这是"外部模块只有二进制"那条路的关键一环：目录里的合成身份只能填
+    /// `kind = "tool"` 这类占位（构造目录时还没握手），模块自己说了之后，
+    /// 面板分组（`tag`）、作用域门控（`kind`）、包级启停（`package`）、依赖图
+    /// （`requires` / `provides`）才有真值。
+    #[test]
+    fn identity_claim_overrides_identity_but_not_host_facts() {
+        let reg = ModuleRegistry::new();
+        reg.register(Arc::new(BuiltinModule::new(
+            // 合成身份：外部条目在目录里长这样。
+            ModuleManifest::builtin("acme.widget", "acme.widget", "0.0.0", "tool", "")
+                .with_runtime(crate::ModuleRuntime::Subprocess)
+                .with_builtin_flag(false)
+                .with_tag("outside"),
+            |_| Ok(vec![]),
+        )))
+        .unwrap();
+        reg.set_definition(
+            "acme.widget",
+            ModuleDefinition {
+                source_path: "/etc/modules.toml".into(),
+                command: "/opt/acme/widget".into(),
+                args: vec!["--serve".into()],
+                env_keys: vec!["ACME_TOKEN".into()],
+            },
+        );
+        reg.set_module_error("acme.widget", "still starting");
+
+        // 模块自述：类别 / 名字 / 版本 / 包 / 依赖都由它给。
+        let claim = ModuleManifest::from_claim(
+            echo_module_api::ModuleManifestClaim::new("acme.widget", "widget")
+                .with_name("小部件")
+                .with_version("1.2.3")
+                .with_description("宿主完全不认识的模块")
+                .with_tag("outside")
+                .with_author("Acme")
+                .with_package("acme.widgets")
+                .with_requires(["acme.host.store"])
+                .with_provides(["acme.widget.api"]),
+            crate::ModuleRuntime::Subprocess,
+            false,
+        );
+        reg.set_identity_claim("acme.widget", claim);
+
+        let d = &reg.descriptors()[0];
+        // 身份：以 claim 为准。
+        assert_eq!(d.kind, "widget", "类别由模块声明");
+        assert_eq!(d.name, "小部件");
+        assert_eq!(d.version, "1.2.3");
+        assert_eq!(d.description, "宿主完全不认识的模块");
+        assert_eq!(d.package, "acme.widgets");
+        // 宿主的事实：监督器 / 定义都不该被 claim 顶掉。
+        assert!(
+            d.enabled,
+            "enabled 是宿主配置（未显式关掉即 true），claim 说了不算"
+        );
+        assert_eq!(d.error.as_deref(), Some("still starting"));
+        assert_eq!(d.command, "/opt/acme/widget");
+        assert_eq!(d.args, vec!["--serve".to_string()]);
+        assert_eq!(d.env_keys, vec!["ACME_TOKEN".to_string()]);
+        assert_eq!(d.source_path, "/etc/modules.toml");
+        assert_eq!(d.runtime, "subprocess");
+        assert!(!d.builtin);
     }
 
     /// 定义来源进 descriptor：来源文件 / 启动命令 / 参数 / 环境变量键名。
