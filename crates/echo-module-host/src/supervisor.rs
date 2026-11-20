@@ -45,8 +45,8 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::api::{
     compatible, Cancel, Contribution, Drain, Hello, HostCallOutcome, HostCallResult, HostToModule,
-    Invoke, InvokeContext, InvokeOutcome, LogLevel, LogRecord, ModuleToHost, PROTOCOL_NAME,
-    PROTOCOL_VERSION,
+    Invoke, InvokeContext, InvokeOutcome, LogLevel, LogRecord, ModuleManifestClaim, ModuleToHost,
+    PROTOCOL_NAME, PROTOCOL_VERSION,
 };
 use crate::host_service::HostServiceRegistry;
 use crate::transport::{ModuleConnection, ModuleSpec, Transport, TransportError};
@@ -336,6 +336,17 @@ impl ModuleHandle {
     /// 最近一次 `Register` 的贡献集合（整体替换语义）。
     pub fn contributions(&self) -> Vec<Contribution> {
         self.shared.contributions()
+    }
+
+    /// 模块自述身份（最近一次 `Register` 携带的 `manifest`）。
+    ///
+    /// `None` = 模块没有自述身份（旧模块，或者它不关心宿主怎么描述它）。
+    /// 宿主此时应按配置行合成一个最小身份，**不要**把它当成"没有身份"。
+    ///
+    /// 拿到 claim 之后由宿主补上两个只有宿主知道的字段（`runtime` / `builtin`）
+    /// 再转成宿主自己的清单类型——见 `echo_module::ModuleManifest::from_claim`。
+    pub fn manifest_claim(&self) -> Option<ModuleManifestClaim> {
+        self.shared.manifest_claim()
     }
 
     /// 已发生的重启次数（按重启尝试计数，含成功与失败尝试）。
@@ -709,6 +720,11 @@ struct Shared {
     rate_meters: Mutex<RateMeters>,
     state: Mutex<ModuleState>,
     contributions: Mutex<Vec<Contribution>>,
+    /// 模块自述身份（最近一次 `Register` 的 `manifest`）。
+    ///
+    /// `None` = 模块没声明身份（旧模块 / 不关心面板呈现）——此时调用方应
+    /// 退回"按配置行合成"，而不是把它当成"身份为空"。
+    manifest_claim: Mutex<Option<ModuleManifestClaim>>,
     restarts: AtomicU32,
     /// 完成的热替换次数（仅成功原子切换计数；崩溃重启不计入）。
     hot_replaces: AtomicU32,
@@ -829,6 +845,7 @@ impl Shared {
             rate_meters: Mutex::new(RateMeters::default()),
             state: Mutex::new(ModuleState::Pending),
             contributions: Mutex::new(Vec::new()),
+            manifest_claim: Mutex::new(None),
             restarts: AtomicU32::new(0),
             hot_replaces: AtomicU32::new(0),
             generation: AtomicU64::new(0),
@@ -869,6 +886,31 @@ impl Shared {
             .contributions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = list;
+    }
+
+    fn manifest_claim(&self) -> Option<ModuleManifestClaim> {
+        self.manifest_claim
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// 记录模块自述身份。`None` 是合法状态（旧模块不发这个字段）。
+    fn set_manifest_claim(&self, claim: Option<ModuleManifestClaim>) {
+        if let Some(claim) = &claim {
+            tracing::info!(
+                module = %self.module_id,
+                kind = %claim.kind,
+                package = %claim.package_id(),
+                requires = claim.requires.len(),
+                provides = claim.provides.len(),
+                "module declared its manifest"
+            );
+        }
+        *self
+            .manifest_claim
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = claim;
     }
 
     /// 频率限额：`kind` 走哪一路窗口。返回是否放行；超限时累计计数并按
@@ -1411,7 +1453,23 @@ async fn run_handshake(
                     welcomed = true;
                     tracing::debug!(module = %module_id, version = w.version, capabilities = ?w.capabilities, "module welcomed");
                 }
-                ModuleToHost::Register(r) => registered = Some(r.contributions),
+                ModuleToHost::Register(r) => {
+                    // 自述身份的 id 必须与握手 id 一致：否则一个进程可以顶着
+                    // 自己的 `Hello.module_id` 注册**别人**的清单（面板与依赖
+                    // 图会指向错误的模块）。握手期 fail-closed——这里拒绝比
+                    // 事后在面板上看到一行错身份好查得多。
+                    if let Some(claim) = &r.manifest {
+                        if claim.id != module_id {
+                            return Err(TransportError::Protocol(format!(
+                                "manifest id mismatch: handshake module_id {module_id:?}, \
+                                 register.manifest.id {:?}",
+                                claim.id
+                            )));
+                        }
+                    }
+                    shared.set_manifest_claim(r.manifest.map(|claim| *claim));
+                    registered = Some(r.contributions);
+                }
                 ModuleToHost::Ready => {
                     if !welcomed {
                         return Err(TransportError::Protocol(
@@ -1902,7 +1960,22 @@ fn dispatch(shared: &Arc<Shared>, source: &Arc<dyn ModuleConnection>, msg: Modul
             }
             log_record(&shared.module_id, &l);
         }
-        ModuleToHost::Register(r) => shared.set_contributions(r.contributions),
+        ModuleToHost::Register(r) => {
+            // 重注册（热替换后新版模块可能换了 kind / package）。身份与贡献
+            // 必须一起替换：只换一半会出现"贡献是新的、门控按旧 kind 算"。
+            if let Some(claim) = &r.manifest {
+                if claim.id != shared.module_id {
+                    tracing::error!(
+                        module = %shared.module_id,
+                        claimed = %claim.id,
+                        "ignoring re-registration: manifest id does not match the module id"
+                    );
+                    return;
+                }
+            }
+            shared.set_manifest_claim(r.manifest.map(|claim| *claim));
+            shared.set_contributions(r.contributions);
+        }
         ModuleToHost::HostCall(call) => {
             // 频率限额：超限**回一条错误回执**（模块在等，丢掉会永久挂住）。
             if !shared.allow(RateBudget::HostCalls) {

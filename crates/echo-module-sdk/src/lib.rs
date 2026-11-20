@@ -101,6 +101,38 @@ pub trait ModuleHandler: Send + Sync + 'static {
     /// 要注册的贡献集合（Hello 后经 `Register` 全量上报）。
     fn contributions(&self) -> Vec<Contribution>;
 
+    /// 模块**自述身份**（可选；随 `Register.manifest` 上报）。
+    ///
+    /// 缺省 `None` = 由宿主按配置行合成一个最小身份（id + 命令 + 运输形态）。
+    /// 那套合成够让面板显示一行，但**派生不了任何门控**：宿主的 persona 门控
+    /// 读 `kind`，未登记的值 fail-closed 到进程级；包级启停读 `package`；
+    /// 依赖排序读 `requires` / `provides`。
+    ///
+    /// 想做"宿主完全不知道这个模块"的独立产物，就在这里把自己的身份完整
+    /// 报上去——`runtime` 与 `builtin` 不用填，那两个字段由宿主决定：
+    ///
+    /// ```no_run
+    /// # use echo_module_api::protocol::ModuleManifestClaim;
+    /// # use echo_module_sdk::{Contribution, InvokeOutcome, InvokeRequest, ModuleHandler};
+    /// # struct M;
+    /// # #[async_trait::async_trait]
+    /// # impl ModuleHandler for M {
+    /// # fn contributions(&self) -> Vec<Contribution> { vec![] }
+    /// # async fn invoke(&self, _r: InvokeRequest) -> InvokeOutcome { unreachable!() }
+    /// fn manifest_claim(&self) -> Option<ModuleManifestClaim> {
+    ///     Some(
+    ///         ModuleManifestClaim::new("acme.widget", "tool")
+    ///             .with_name("小部件")
+    ///             .with_package("acme.widget")
+    ///             .with_requires(["acme.host.store"]),
+    ///     )
+    /// }
+    /// # }
+    /// ```
+    fn manifest_claim(&self) -> Option<echo_module_api::ModuleManifestClaim> {
+        None
+    }
+
     /// 处理一次调用。
     ///
     /// SDK 已校验贡献名在 [`contributions`](Self::contributions) 之内；返回

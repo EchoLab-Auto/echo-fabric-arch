@@ -128,6 +128,34 @@ graph LR
 - 协议名或版本不兼容 → 直接拒绝，不做"先连上再试试"；
 - `Register` 里声明的贡献之外的东西，宿主调用时返回结构化错误，不静默放行。
 
+### 自述身份（`Register.manifest`）
+
+`Register` 除了贡献清单，还可以带一份**模块自述身份**（`ModuleManifestClaim`）：
+`id` / `name` / `version` / `description` / `kind` / `tag` / `author` /
+`package` / `requires` / `optional_requires` / `provides`。
+
+为什么需要它：宿主对外部模块（源码不在宿主仓里，只给一个二进制）原本只能
+按配置行合成身份——`kind` 只能是运输拼写（`stdio` / `dylib`），`package` /
+`requires` / `provides` 全空。于是宿主拿不到任何"这模块该归谁管"的信息：
+作用域门控按 `kind` 派生（未登记的值 fail-closed 到进程级），包级启停与依赖
+排序也无从谈起。**有了 claim，"宿主完全不认识该模块的源码"才真的可行**。
+
+两个字段刻意**不由模块声明**，由宿主填：
+
+| 字段 | 为什么归宿主 |
+|---|---|
+| `runtime` | 同一个模块可以被 stdio 或 dylib 装进来，模块不知道也不该猜 |
+| `builtin` | 来源维度（编译进宿主 / 目录发现），只有宿主知道 |
+
+校验与语义：
+
+- claim 的 `id` 必须与 `Welcome.module_id` 一致，否则握手 `Err(Protocol)`
+  （防一个进程顶着别人的 id 注册清单）；
+- 不带 claim（`None`）= 旧模块，宿主回退到"按配置行合成"，行为不变；
+- 重注册（热替换后新版换了 `kind` / `package`）时身份与贡献**整体替换**，
+  不允许只换一半；错 id 的重注册整帧丢弃；
+- 宿主侧有现成转换：`echo_module::ModuleManifest::from_claim(claim, runtime, builtin)`。
+
 `HostCall`（模块回呼宿主服务）是这条通道上的反方向消息，单独成篇：
 [宿主服务与回呼](./host-service.md)。
 

@@ -18,6 +18,10 @@ use std::path::{Path, PathBuf};
 const INTERNAL_EDGES: &[(&str, &[&str])] = &[
     ("echo-module-api", &[]),
     ("echo-module-sdk", &["echo-module-api"]),
+    // 模块接缝层：manifest 要把协议上的自述身份（`Register.manifest`）转成
+    // 宿主的 `ModuleManifest`，因此依赖契约叶子 api；`echo-context` 是它的
+    // 生命周期上下文（既有边，登记在此避免"看不见的依赖"）。
+    ("echo-module", &["echo-context", "echo-module-api"]),
 ];
 
 fn repo_root() -> PathBuf {

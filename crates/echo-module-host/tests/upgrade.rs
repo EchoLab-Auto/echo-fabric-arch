@@ -284,6 +284,7 @@ impl InprocModule for EchoInstance {
                                     name: "echo".to_string(),
                                     payload: json!({"description": "回显"}),
                                 }],
+                                manifest: None,
                             }))
                             .await;
                         let _ = io.send(ModuleToHost::Ready).await;
@@ -681,6 +682,7 @@ impl InprocModule for ChangingInstance {
                                     name: tool_name.clone(),
                                     payload: json!({"description": "变化后的贡献"}),
                                 }],
+                                manifest: None,
                             }))
                             .await;
                         let _ = io.send(ModuleToHost::Ready).await;

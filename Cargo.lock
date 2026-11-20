@@ -162,6 +162,7 @@ name = "echo-module"
 version = "0.19.2"
 dependencies = [
  "echo-context",
+ "echo-module-api",
  "serde",
  "serde_json",
  "thiserror",

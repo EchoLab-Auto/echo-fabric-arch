@@ -143,6 +143,7 @@ impl InprocModule for TestModule {
                 let _ = io
                     .send(ModuleToHost::Register(Register {
                         contributions: script.contributions.clone(),
+                        manifest: None,
                     }))
                     .await;
             }
@@ -198,6 +199,7 @@ impl InprocModule for TestModule {
                                 let _ = io
                                     .send(ModuleToHost::Register(Register {
                                         contributions: next.clone(),
+                                        manifest: None,
                                     }))
                                     .await;
                                 let _ = io

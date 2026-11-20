@@ -67,6 +67,7 @@ fn module_messages_roundtrip() {
                 payload: json!({"shape": "由宿主与模块自行约定"}),
             },
         ],
+        manifest: None,
     }));
     roundtrip_module(ModuleToHost::InvokeResult(InvokeResult {
         call_id: "websearch:1".into(),
@@ -375,4 +376,62 @@ fn service_contribution_wire_field_avoids_tag_collision() {
         1,
         "JSON 出现重复键：{text}"
     );
+}
+
+/// 模块自述身份：全字段往返。
+#[test]
+fn manifest_claim_roundtrips() {
+    let claim = ModuleManifestClaim::new("echo-agent.checklist", "tool")
+        .with_name("任务清单")
+        .with_version("0.1.0")
+        .with_description("清单工具与持久 store")
+        .with_tag("outside")
+        .with_author("EchoLab")
+        .with_package("echo-agent.checklist")
+        .with_requires(["echo-agent.host.checklist"])
+        .with_provides(["echo-agent.checklist.tools"]);
+    roundtrip_module(ModuleToHost::Register(Register {
+        contributions: vec![],
+        manifest: Some(Box::new(claim)),
+    }));
+}
+
+/// 旧模块不发 `manifest` 字段时照常解码（v1 只增字段的兼容承诺）。
+#[test]
+fn register_without_manifest_still_decodes() {
+    let legacy = json!({
+        "type": "register",
+        "payload": {"contributions": []}
+    });
+    let msg: ModuleToHost = serde_json::from_value(legacy).expect("old Register must decode");
+    match msg {
+        ModuleToHost::Register(r) => assert!(
+            r.manifest.is_none(),
+            "缺省应是 None —— 宿主据此回退到「按配置行合成身份」"
+        ),
+        other => panic!("expected Register, got {other:?}"),
+    }
+}
+
+/// 未声明身份的模块**不会**往线上白写一个 `manifest: null`。
+#[test]
+fn register_omits_absent_manifest_on_the_wire() {
+    let text = serde_json::to_string(&ModuleToHost::Register(Register {
+        contributions: vec![],
+        manifest: None,
+    }))
+    .unwrap();
+    assert!(
+        !text.contains("manifest"),
+        "缺省身份不应出现在线上（协议噪声 / 旧宿主不认）：{text}"
+    );
+}
+
+/// claim 的 `package_id` 回退语义与宿主侧 manifest 一致（未声明 = 自身 id）。
+#[test]
+fn claim_package_falls_back_to_id() {
+    let claim = ModuleManifestClaim::new("acme.thing", "tool");
+    assert_eq!(claim.package_id(), "acme.thing");
+    let scoped = claim.with_package("acme");
+    assert_eq!(scoped.package_id(), "acme");
 }

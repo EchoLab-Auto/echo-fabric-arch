@@ -198,6 +198,7 @@ fn on_hello(writer: &mut impl Write, hello: &Hello, split: bool) {
         writer,
         &ModuleToHost::Register(Register {
             contributions: vec![echo_contribution()],
+            manifest: None,
         }),
         split,
     );

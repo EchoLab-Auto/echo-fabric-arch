@@ -32,7 +32,8 @@ pub use contribution::{
 pub use protocol::{
     compatible, Cancel, Drain, Emit, EventNotification, Failure, Hello, HostCall, HostCallOutcome,
     HostCallResult, HostToModule, Invoke, InvokeContext, InvokeOutcome, InvokeResult, LogLevel,
-    LogRecord, ModuleToHost, Register, Welcome, PROTOCOL_NAME, PROTOCOL_VERSION,
+    LogRecord, ModuleManifestClaim, ModuleToHost, Register, Welcome, PROTOCOL_NAME,
+    PROTOCOL_VERSION,
 };
 
 /// 能力 / feature 名单常量（`Welcome.capabilities` 用的稳定字符串）。

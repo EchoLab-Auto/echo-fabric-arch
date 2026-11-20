@@ -212,6 +212,59 @@ impl ModuleManifest {
         self.builtin = builtin;
         self
     }
+
+    /// 从模块在协议上**自述的身份**构造清单（`Register.manifest`）。
+    ///
+    /// 这是"模块只有二进制、源码不在宿主仓里"那条路的关键一环：宿主原本
+    /// 无从知道外部模块的 `kind`（能力类别）与 `package`（归属包），只能拿
+    /// 运输拼写（`stdio`）冒充——而宿主按 `kind` 派生作用域门控，未登记的
+    /// kind fail-closed 到进程级，于是外部模块永远关不掉、也进不了包级启停。
+    ///
+    /// 两个参数由**宿主**决定，不从 claim 取：
+    ///
+    /// - `runtime`：同一个模块可以被 stdio 或 dylib 装进来，模块自己不知道；
+    /// - `builtin`：来源维度（编译进宿主 / 目录发现），只有宿主知道。
+    pub fn from_claim(
+        claim: echo_module_api::ModuleManifestClaim,
+        runtime: ModuleRuntime,
+        builtin: bool,
+    ) -> Self {
+        let echo_module_api::ModuleManifestClaim {
+            id,
+            name,
+            version,
+            description,
+            kind,
+            tag,
+            author,
+            package,
+            requires,
+            optional_requires,
+            provides,
+        } = claim;
+        // 面板标题为空会显示成一行空白：回退到 id（与宿主侧
+        // `static_entries` 对空 name 的处理一致，两处口径不要分叉）。
+        let name = if name.trim().is_empty() {
+            id.clone()
+        } else {
+            name
+        };
+        Self {
+            id,
+            name,
+            version,
+            description,
+            kind,
+            tag,
+            author,
+            builtin,
+            runtime,
+            package,
+            requires,
+            optional_requires,
+            provides,
+        }
+    }
 }
 
 /// Errors from manifest parsing/validation.
@@ -382,5 +435,53 @@ kind = "skill"
         let json = serde_json::to_string(&m).unwrap();
         let back: ModuleManifest = serde_json::from_str(&json).unwrap();
         assert_eq!(m, back);
+    }
+
+    /// 自述身份 → 宿主清单：身份字段来自 claim，来源两字段来自宿主。
+    #[test]
+    fn claim_converts_to_manifest_with_host_owned_fields() {
+        let claim = echo_module_api::ModuleManifestClaim::new("acme.widget", "widget")
+            .with_name("小部件")
+            .with_version("9.9.9")
+            .with_description("来自另一个仓的产物")
+            .with_tag("outside")
+            .with_author("Acme")
+            .with_package("acme.widgets")
+            .with_requires(["acme.host.store"])
+            .with_provides(["acme.widget.api"]);
+        let m = ModuleManifest::from_claim(claim, ModuleRuntime::Subprocess, false);
+        assert_eq!(m.id, "acme.widget");
+        assert_eq!(m.name, "小部件");
+        assert_eq!(m.version, "9.9.9");
+        assert_eq!(m.kind, "widget");
+        assert_eq!(m.tag, "outside");
+        assert_eq!(m.author, "Acme");
+        assert_eq!(m.package_id(), "acme.widgets");
+        // 只有宿主知道的两个字段：由参数决定，claim 根本不能声明它们。
+        assert_eq!(m.runtime, ModuleRuntime::Subprocess);
+        assert!(!m.builtin);
+        assert_eq!(m.requires, vec!["acme.host.store".to_string()]);
+        assert_eq!(m.provides, vec!["acme.widget.api".to_string()]);
+    }
+
+    /// 空 name 回退到 id：面板不该出现一行空白标题。
+    #[test]
+    fn claim_without_name_falls_back_to_id() {
+        let claim = echo_module_api::ModuleManifestClaim::new("acme.widget", "widget");
+        let m = ModuleManifest::from_claim(claim, ModuleRuntime::Subprocess, false);
+        assert_eq!(m.name, "acme.widget");
+    }
+
+    /// claim 缺字段取保守默认：身份不全不该让模块起不来。
+    #[test]
+    fn sparse_claim_still_yields_a_usable_manifest() {
+        let mut claim = echo_module_api::ModuleManifestClaim::new("acme.widget", "");
+        claim.kind.clear();
+        let m = ModuleManifest::from_claim(claim, ModuleRuntime::Subprocess, false);
+        assert_eq!(m.id, "acme.widget");
+        assert!(m.version.is_empty());
+        assert!(m.requires.is_empty());
+        assert!(m.package.is_none());
+        assert_eq!(m.package_id(), "acme.widget", "未声明包 = 自身即包根");
     }
 }

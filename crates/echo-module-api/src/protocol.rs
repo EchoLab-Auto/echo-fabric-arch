@@ -138,8 +138,136 @@ pub struct Welcome {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Register {
     pub contributions: Vec<Contribution>,
+    /// 模块**自述身份**（可选）。
+    ///
+    /// 缺省 = 由宿主按配置行合成一个（id / 命令 / 运输形态）。那种合成只够
+    /// 让面板显示一行——`kind` 只能是运输拼写（`stdio`），`package` /
+    /// `requires` / `provides` 全空，于是宿主拿不到任何"这模块该归谁管"
+    /// 的信息：宿主按 `kind` 派生作用域门控（未知 kind fail-closed 到进程级），
+    /// 包级启停与依赖排序也无从谈起。
+    ///
+    /// 声明后，宿主用这份 claim 造描述符（**运行形态 `runtime` 与来源
+    /// `builtin` 仍由宿主填**——模块看不见自己是被 stdio 还是 dylib 装进来的，
+    /// 也不该知道宿主把它算不算"内置"）。
+    ///
+    /// 兼容：v1 协议只增字段，旧模块不发这个字段（`None`）行为不变。
+    ///
+    /// **为什么是 `Box`**：整条 `ModuleToHost` 是个 enum，内联一份 claim 会把
+    /// 每一帧（含热路径上的 `InvokeResult`）的枚举尺寸撑到 300 字节量级
+    /// （clippy `large_enum_variant` 当场报警）。身份是「每次注册一次」的载荷，
+    /// 一次额外分配换帧尺寸，值。构造侧用 `Some(Box::new(claim))`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manifest: Option<Box<ModuleManifestClaim>>,
 }
 
+/// 模块在协议上自述的身份——[`crate::ModuleManifest`] 的线格式。
+///
+/// 与宿主侧清单的差别只有两个字段，且都是**宿主决定**的：
+///
+/// | 字段 | 为什么不由模块声明 |
+/// | --- | --- |
+/// | `runtime` | 同一个模块可以被 stdio 或 dylib 装进来；模块不知道也不该猜 |
+/// | `builtin` | 来源维度（编译进宿主 / 目录发现），只有宿主知道 |
+///
+/// `id` 必须与 `Welcome.module_id` 一致，不一致宿主拒绝连接（防止一个进程
+/// 冒充别的模块 id 注册贡献）。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModuleManifestClaim {
+    /// 稳定唯一 id（`{vendor}.{group}.{name}`）。
+    pub id: String,
+    /// 人类可读名（面板标题）。
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub version: String,
+    #[serde(default)]
+    pub description: String,
+    /// 能力类别——**开放标签**，词汇表归宿主。宿主据它派生作用域门控。
+    #[serde(default)]
+    pub kind: String,
+    /// 来源标签（宿主用来分组展示）。
+    #[serde(default)]
+    pub tag: String,
+    #[serde(default)]
+    pub author: String,
+    /// 所属包 id：包级门控（禁一个包 = 其全部成员不可见）按它聚合。
+    /// `None` = 本模块自身即包根。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package: Option<String>,
+    /// 硬依赖的宿主服务键：挂载前必须已在宿主服务表里。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requires: Vec<String>,
+    /// 软依赖（只声明，不阻止挂载）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub optional_requires: Vec<String>,
+    /// 本模块提供到宿主服务表的键。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provides: Vec<String>,
+}
+
+impl ModuleManifestClaim {
+    /// 最小可用身份：只有 id 与类别。
+    pub fn new(id: impl Into<String>, kind: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            kind: kind.into(),
+            ..Self::default()
+        }
+    }
+
+    pub fn with_name(mut self, name: impl Into<String>) -> Self {
+        self.name = name.into();
+        self
+    }
+
+    pub fn with_version(mut self, version: impl Into<String>) -> Self {
+        self.version = version.into();
+        self
+    }
+
+    pub fn with_description(mut self, description: impl Into<String>) -> Self {
+        self.description = description.into();
+        self
+    }
+
+    pub fn with_tag(mut self, tag: impl Into<String>) -> Self {
+        self.tag = tag.into();
+        self
+    }
+
+    pub fn with_author(mut self, author: impl Into<String>) -> Self {
+        self.author = author.into();
+        self
+    }
+
+    pub fn with_package(mut self, package: impl Into<String>) -> Self {
+        self.package = Some(package.into());
+        self
+    }
+
+    pub fn with_requires<I, S>(mut self, keys: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.requires = keys.into_iter().map(Into::into).collect();
+        self
+    }
+
+    pub fn with_provides<I, S>(mut self, keys: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.provides = keys.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// 本模块所属的包 id：显式声明优先，未声明时回退为模块 id。
+    pub fn package_id(&self) -> &str {
+        self.package.as_deref().unwrap_or(&self.id)
+    }
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct InvokeResult {
     pub call_id: String,

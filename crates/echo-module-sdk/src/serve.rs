@@ -274,7 +274,29 @@ where
             capabilities: options.capabilities.clone(),
         }),
     )?;
-    enqueue(&tx, &ModuleToHost::Register(Register { contributions }))?;
+    // 自述身份随贡献一起上报（缺省 None = 宿主按配置行合成）。
+    // 必须与 `Welcome.module_id` 一致；不一致宿主在握手期直接拒绝。
+    let manifest_claim = handler.manifest_claim();
+    if let Some(claim) = &manifest_claim {
+        if claim.id != effective_module_id {
+            let message = format!(
+                "manifest id {:?} does not match module id {:?}",
+                claim.id, effective_module_id
+            );
+            tracing::warn!(%message, "refusing to register a mismatched manifest");
+            write_failure(&tx, "invalid_manifest", &message);
+            drop(tx);
+            let _ = finish_writer(writer_task).await;
+            return Err(SdkError::Protocol(message));
+        }
+    }
+    enqueue(
+        &tx,
+        &ModuleToHost::Register(Register {
+            contributions,
+            manifest: manifest_claim.map(Box::new),
+        }),
+    )?;
     enqueue(&tx, &ModuleToHost::Ready)?;
     tracing::debug!(
         module_id = %effective_module_id,
