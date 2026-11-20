@@ -4,6 +4,56 @@
 但每一处都记在这里。`PROTOCOL_VERSION` 是**线上契约**版本，与 crate 版本独立
 （判定规则见 [README](./README.md#版本与兼容)）。
 
+## [0.19.0] — 未发布（新增能力，无 breaking）
+
+### 新增：`dylib` 运输层——独立产物 + 同进程
+
+第三种载体。模块编译成 `.so`，宿主 `dlopen` 后把一条 socketpair 的模块侧
+fd 交给它，**运行期插入宿主进程**。它补上的是另两种载体各自都给不出的组合：
+
+| 形态 | 独立产物 | 同进程 | 崩溃隔离 |
+|---|---|---|---|
+| `inproc` | ✗ | ✓ | ✗ |
+| `stdio` | ✓ | ✗ | ✓ |
+| **`dylib`** | **✓** | **✓** | **✗** |
+
+跨边界面只有一个 C 符号 `int echo_module_run(int fd)`——模块继续讲与 stdio
+**逐位一致**的帧协议，只是载体从 stdin/stdout 换成 socket。没有 Rust 类型
+过 FFI，所以不需要 ABI 稳定层，也不需要每个模块手写 `extern "C"` 桥。
+
+模块侧一行接上：
+
+```rust
+#[no_mangle]
+pub extern "C" fn echo_module_run(fd: c_int) -> c_int {
+    serve_fd_blocking(|| MyModule, fd)
+}
+```
+
+- `echo-module-sdk`：新增 `serve_fd_blocking`（`#[cfg(unix)]`）。
+- `echo-module-host`：新增 `dylib::{DylibTransport, DylibConnection}`；
+  `bootstrap::LaunchSpec` 加 `LaunchKind`，`launch_specs` 接受
+  `kind = "dylib"`，`start_modules` 按 kind 分派（此前硬编码 stdio）。
+- `echo-module-loader`：`dylib` 行也要 `command`（`.so` 路径），装载期点名。
+- 新增 `crates/echo-module-host/src/frames.rs`：帧编解码的**唯一实现**，
+  stdio 与 dylib 共用。状态机仍各自保留（stdio 能强杀子进程、dylib 只能等，
+  语义本来就不同）。
+
+`PROTOCOL_VERSION` **不变**（1）：线上契约一个字段都没动，变的只是载体。
+
+### 已知边界（形态本身的代价，不是缺陷）
+
+- **没有崩溃隔离**：`.so` 里的 segfault / abort / OOM 直接带走宿主。panic 由
+  `.so` 内的 `catch_unwind` 接住（`extern "C"` 是 nounwind，穿出的 panic 会被
+  编译成 `abort`）。
+- **不能卸载**：`dlclose` 带线程的 Rust cdylib 不安全，映射保留到进程退出。
+  所以 dylib **不会**让"换模块不重启进程"变成可能。
+- **关停没有可杀的对象**：只能关写方向（模块读到 EOF 自行退出）然后等；
+  等不到就以 `Timeout` 收场并泄漏该线程。
+
+形态选择的标准因此不是性能（三种载体都在每轮一次的量级上），而是"这个模块
+崩了能不能接受宿主一起崩"。
+
 ## [0.18.0] — 未发布（breaking）
 
 ### 变更：`entry` 删除，`tag` 新增
